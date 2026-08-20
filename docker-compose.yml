@@ -47,6 +47,18 @@ services:
     networks:
       - test-net
 
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    restart: unless-stopped
+    networks:
+      - test-net
+    ports:
+      - "8085:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local-kraft-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker1:29092
+
   jobmanager:
     image: flink:2.3.0-scala_2.12
     container_name: jobmanager
@@ -75,28 +87,28 @@ services:
         jobmanager.rpc.address: jobmanager
         taskmanager.numberOfTaskSlots: 2 
 
-  clickhouse:
-    image: clickhouse/clickhouse-server
-    container_name: clickhouse
-    restart: unless-stopped
-    networks:
-      - test-net
-    ports:
-      - "8123:8123"
-      - "9002:9000"
-    environment:
-      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
-
-  tabix:
-    image: spoonest/clickhouse-tabix-web-client
-    container_name: tabix
-    restart: unless-stopped
-    networks:
-      - test-net
-    ports:
-      - "8082:80"
-    depends_on:
-      - clickhouse
+#  clickhouse:
+#    image: clickhouse/clickhouse-server
+#    container_name: clickhouse
+#    restart: unless-stopped
+#    networks:
+#      - test-net
+#    ports:
+#      - "8123:8123"
+#      - "9002:9000"
+#    environment:
+#      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+#
+#  tabix:
+#    image: spoonest/clickhouse-tabix-web-client
+#    container_name: tabix
+#    restart: unless-stopped
+#    networks:
+#      - test-net
+#    ports:
+#      - "8082:80"
+#    depends_on:
+#      - clickhouse
 
   postgres:
     image: postgres:16-alpine

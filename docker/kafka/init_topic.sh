@@ -39,9 +39,19 @@ echo "Creating Kafka topics..."
 
 /opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
   --bootstrap-server $BOOTSTRAP_SERVER \
-  --topic cdp.events \
+  --topic input.events \
   --partitions 3 \
   --replication-factor 1
+
+/opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
+  --bootstrap-server $BOOTSTRAP_SERVER \
+  --topic stream-schema-registry \
+  --partitions 1 \
+  --replication-factor 1 \
+  --config cleanup.policy=compact \
+  --config min.compaction.lag.ms=0 \
+  --config delete.retention.ms=100
+
 
 echo "Kafka topics created successfully!"
 

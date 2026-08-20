@@ -1,32 +1,35 @@
 package vdf.vdt.streaming.generator.rule_gen;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.io.File;
-import java.io.InputStream;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Properties;
 
 public class Main {
     public static void main(String[] args) {
-        Properties props = new Properties();
-        try (InputStream input = Main.class.getClassLoader().getResourceAsStream("application.properties")) {
-            if (input != null) props.load(input);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        int reqPerSecond = 10;
+        int idRange = 100;
+        int totalRules = 1000;
 
-        int totalRules = Integer.parseInt(props.getProperty("rule.default.total-rules", "100"));
-        String basePath = props.getProperty("rule.output.base-path", "rules_output");
+        // Base data folder
+        Path basePath = Path.of("data/rules").toAbsolutePath();
+        System.out.println("Base path: " + basePath);
+        String basePathString = basePath.toString();
 
-        // Format thời gian hiện tại đến giây, dùng dấu gạch dưới (_)
         DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
         String timeString = dtf.format(LocalDateTime.now());
 
-        // Cấu trúc đường dẫn: path/so_rule/time.json (Ví dụ: rules_output/100/2026-06-07_14-30-15.json)
-        String filePath = basePath + File.separator + totalRules + File.separator + timeString + ".json";
+        // Eg: rules_output/100/2026-06-07_14-30-15.json
+        String filePath = basePathString + File.separator + totalRules + File.separator + timeString + ".json";
 
-        RuleGenerator ruleService = new RuleGenerator();
+        RuleGenerator ruleService = new RuleGenerator(idRange, reqPerSecond);
         try {
+            Path targetPath = Path.of(filePath);
+            if (targetPath.getParent() != null) {
+                Files.createDirectories(targetPath.getParent());
+            }
+
             ruleService.generateRulesToFile(totalRules, filePath);
             System.out.println(">>> Rule successfully generated at: " + new File(filePath).getAbsolutePath());
         } catch (Exception e) {

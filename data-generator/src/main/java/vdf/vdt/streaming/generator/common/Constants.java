@@ -1,29 +1,404 @@
 package vdf.vdt.streaming.generator.common;
 
+import vdf.vdt.streaming.generator.model.FieldDefinition;
+
 import java.util.List;
-import java.util.Map;
+import java.util.stream.Stream;
 
+// Single-schema definition for the CDP event stream.
+//
+// 200 fields in ratio 1:2:3:4 across four categories:
+//   static_categorical  - 20 fields, fixed per customer ID (ENUM)
+//   dynamic_categorical - 40 fields, changes each event (ENUM)
+//   static_numeric      - 60 fields, fixed per customer ID (INT/FLOAT RANGE)
+//   dynamic_numeric     - 80 fields, real-time metrics per event (INT/FLOAT RANGE)
+//
+// Each list uses Stream.of(...).map(fd -> fd.withCategory(...)).toList() so every
+// FieldDefinition carries its category at runtime and in the serialised schema.
+// All monetary amounts are in VND (Vietnamese Dong).
 public class Constants {
-    // Tên các trường định danh và số cho từng schema (đảm bảo tên trường khác nhau hoàn toàn)
-    public static final Map<Integer, List<String>> CATEGORICAL_COLUMNS = Map.of(
-            20, List.of("s1_cat_region", "s1_cat_tier", "s1_cat_status", "s1_cat_device", "s1_cat_channel", "s1_cat_segment"),
-            50, List.of("s2_cat_zone", "s2_cat_branch", "s2_cat_grade", "s2_cat_type", "s2_cat_tier", "s2_cat_source", "s2_cat_group", "s2_cat_segment", "s2_cat_status", "s2_cat_channel", "s2_cat_role", "s2_cat_dept", "s2_cat_city", "s2_cat_unit", "s2_cat_level", "s2_cat_tier2"),
-            100, List.of("s3_c1", "s3_c2", "s3_c3", "s3_c4", "s3_c5", "s3_c6", "s3_c7", "s3_c8", "s3_c9", "s3_c10", "s3_c11", "s3_c12", "s3_c13", "s3_c14", "s3_c15", "s3_c16", "s3_c17", "s3_c18", "s3_c19", "s3_c25", "s3_c21", "s3_c22", "s3_c23", "s3_c24", "s3_c25", "s3_c26", "s3_c27", "s3_c28", "s3_c29", "s3_c30"),
-            150, List.of("s4_cat_a1", "s4_cat_a2", "s4_cat_a3", "s4_cat_a4", "s4_cat_a5", "s4_cat_a6", "s4_cat_a7", "s4_cat_a8", "s4_cat_a9", "s4_cat_a10", "s4_cat_a11", "s4_cat_a12", "s4_cat_a13", "s4_cat_a14", "s4_cat_a15", "s4_cat_a16", "s4_cat_a17", "s4_cat_a18", "s4_cat_a19", "s4_cat_a20", "s4_cat_a21", "s4_cat_a22", "s4_cat_a23", "s4_cat_a24", "s4_cat_a25", "s4_cat_a26", "s4_cat_a27", "s4_cat_a28", "s4_cat_a29", "s4_cat_a30", "s4_cat_a31", "s4_cat_a32", "s4_cat_a33", "s4_cat_a34", "s4_cat_a35", "s4_cat_a36", "s4_cat_a37", "s4_cat_a38", "s4_cat_a39", "s4_cat_a45", "s4_cat_a41", "s4_cat_a42", "s4_cat_a43", "s4_cat_a44", "s4_cat_a45", "s4_cat_a46", "s4_cat_a47", "s4_cat_a48", "s4_cat_a49", "s4_cat_a50"),
-            200, List.of("s5_tag_1", "s5_tag_2", "s5_tag_3", "s5_tag_4", "s5_tag_5", "s5_tag_6", "s5_tag_7", "s5_tag_8", "s5_tag_9", "s5_tag_10", "s5_tag_11", "s5_tag_12", "s5_tag_13", "s5_tag_14", "s5_tag_15", "s5_tag_16", "s5_tag_17", "s5_tag_18", "s5_tag_19", "s5_tag_20", "s5_tag_21", "s5_tag_22", "s5_tag_23", "s5_tag_24", "s5_tag_25", "s5_tag_26", "s5_tag_27", "s5_tag_28", "s5_tag_29", "s5_tag_30", "s5_tag_31", "s5_tag_32", "s5_tag_33", "s5_tag_34", "s5_tag_35", "s5_tag_36", "s5_tag_37", "s5_tag_38", "s5_tag_39", "s5_tag_40", "s5_tag_41", "s5_tag_42", "s5_tag_43", "s5_tag_44", "s5_tag_45", "s5_tag_46", "s5_tag_47", "s5_tag_48", "s5_tag_49", "s5_tag_50", "s5_tag_51", "s5_tag_52", "s5_tag_53", "s5_tag_54", "s5_tag_55", "s5_tag_56", "s5_tag_57", "s5_tag_58", "s5_tag_59", "s5_tag_65", "s5_tag_61", "s5_tag_62", "s5_tag_63", "s5_tag_64", "s5_tag_65", "s5_tag_66", "s5_tag_67", "s5_tag_68", "s5_tag_69", "s5_tag_70")
-    );
 
-    public static final Map<Integer, List<String>> NUMERIC_COLUMNS = Map.of(
-            20, List.of("s1_num_age", "s1_num_score", "s1_num_amount", "s1_num_balance", "s1_num_latency", "s1_num_rate", "s1_num_count", "s1_num_index", "s1_num_weight", "s1_num_height", "s1_num_temp", "s1_num_pressure", "s1_num_speed"),
-            50, generateNumericNames(50, 34),
-            100, generateNumericNames(100, 70),
-            150, generateNumericNames(150, 100),
-            200, generateNumericNames(200, 130)
-    );
+    public static final int TOTAL_FIELDS = 200;
 
-    private static List<String> generateNumericNames(int totalFields, int numCount) {
-        return java.util.stream.IntStream.range(0, numCount)
-                .mapToObj(i -> "schema" + totalFields + "_num_" + i)
-                .toList();
-    }
+    // ══════════════════════════════════════════════════════════════════════════
+    // 1. STATIC CATEGORICAL  (20 fields, ratio = 1)
+    //    Fixed attributes bound to a customer ID – never change across events.
+    //    Referenced in rule expressions with the "_current" suffix.
+    // ══════════════════════════════════════════════════════════════════════════
+    public static final List<FieldDefinition> STATIC_CATEGORICAL_FIELDS =
+            Stream.of(
+
+            FieldDefinition.ofEnum("customer_segment",
+                    List.of("PREMIUM", "STANDARD", "BASIC", "VIP", "ENTERPRISE")),
+
+            FieldDefinition.ofEnum("home_province",
+                    List.of("HANOI", "HCM", "DANANG", "HAIPHONG", "CANTHO",
+                            "BINH_DUONG", "DONG_NAI", "QUANG_NINH", "NGHE_AN",
+                            "THANH_HOA", "KHANH_HOA", "LAM_DONG", "THAI_NGUYEN",
+                            "AN_GIANG", "THUA_THIEN_HUE", "LONG_AN", "BINH_THUAN",
+                            "VUNG_TAU", "HA_TINH", "NINH_BINH")),
+
+            FieldDefinition.ofEnum("gender",
+                    List.of("MALE", "FEMALE", "OTHER")),
+
+            FieldDefinition.ofEnum("nationality",
+                    List.of("VN", "US", "KR", "JP", "CN", "AU", "UK", "FR", "DE", "SG")),
+
+            FieldDefinition.ofEnum("marital_status",
+                    List.of("SINGLE", "MARRIED", "DIVORCED", "WIDOWED")),
+
+            FieldDefinition.ofEnum("education_level",
+                    List.of("PRIMARY", "SECONDARY", "HIGH_SCHOOL", "BACHELOR", "MASTER", "PHD")),
+
+            FieldDefinition.ofEnum("occupation_category",
+                    List.of("EMPLOYEE", "SELF_EMPLOYED", "BUSINESS_OWNER", "STUDENT", "RETIRED", "OTHER")),
+
+            FieldDefinition.ofEnum("income_bracket",
+                    List.of("BELOW_5M", "5M_TO_15M", "15M_TO_30M", "30M_TO_50M", "ABOVE_50M")),
+
+            FieldDefinition.ofEnum("residential_area_type",
+                    List.of("URBAN", "SUBURBAN", "RURAL")),
+
+            FieldDefinition.ofEnum("bank_tier",
+                    List.of("TIER_1", "TIER_2", "TIER_3")),
+
+            FieldDefinition.ofEnum("acquisition_channel",
+                    List.of("BRANCH", "ONLINE", "MOBILE_APP", "REFERRAL", "AGENT")),
+
+            FieldDefinition.ofEnum("kyc_status",
+                    List.of("VERIFIED", "PENDING", "REJECTED", "EXPIRED")),
+
+            FieldDefinition.ofEnum("risk_rating",
+                    List.of("LOW", "MEDIUM", "HIGH", "VERY_HIGH")),
+
+            FieldDefinition.ofEnum("loyalty_tier",
+                    List.of("BRONZE", "SILVER", "GOLD", "PLATINUM", "DIAMOND")),
+
+            FieldDefinition.ofEnum("region",
+                    List.of("NORTH", "CENTRAL", "SOUTH", "HIGHLAND", "MEKONG_DELTA")),
+
+            FieldDefinition.ofEnum("city_tier",
+                    List.of("TIER_1_CITY", "TIER_2_CITY", "TIER_3_CITY")),
+
+            FieldDefinition.ofEnum("employment_sector",
+                    List.of("BANKING", "TECH", "HEALTHCARE", "EDUCATION",
+                            "RETAIL", "MANUFACTURING", "GOVERNMENT", "OTHER")),
+
+            FieldDefinition.ofEnum("preferred_language",
+                    List.of("VI", "EN", "ZH", "KO", "JA")),
+
+            FieldDefinition.ofEnum("customer_type",
+                    List.of("INDIVIDUAL", "CORPORATE", "SME")),
+
+            FieldDefinition.ofEnum("credit_bureau_grade",
+                    List.of("A", "B", "C", "D", "E"))
+    ).map(fd -> fd.withCategory("static_categorical")).toList();
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // 2. DYNAMIC CATEGORICAL  (40 fields, ratio = 2)
+    //    Fluctuating status attributes that change with every event.
+    // ══════════════════════════════════════════════════════════════════════════
+    public static final List<FieldDefinition> DYNAMIC_CATEGORICAL_FIELDS =
+            Stream.of(
+
+            FieldDefinition.ofEnum("session_status",
+                    List.of("ACTIVE", "IDLE", "EXPIRED", "LOCKED")),
+
+            FieldDefinition.ofEnum("login_channel",
+                    List.of("MOBILE_APP", "WEB", "ATM", "BRANCH", "CALL_CENTER")),
+
+            FieldDefinition.ofEnum("transaction_type",
+                    List.of("TRANSFER", "PAYMENT", "WITHDRAWAL", "DEPOSIT", "TOP_UP", "REFUND")),
+
+            FieldDefinition.ofEnum("device_type",
+                    List.of("IOS", "ANDROID", "DESKTOP", "TABLET")),
+
+            FieldDefinition.ofEnum("network_type",
+                    List.of("WIFI", "4G", "5G", "3G", "ETHERNET")),
+
+            FieldDefinition.ofEnum("auth_method",
+                    List.of("PASSWORD", "OTP", "BIOMETRIC", "PIN", "TOKEN")),
+
+            FieldDefinition.ofEnum("last_transaction_status",
+                    List.of("SUCCESS", "FAILED", "PENDING", "REVERSED", "CANCELLED")),
+
+            FieldDefinition.ofEnum("active_product_category",
+                    List.of("SAVINGS", "CREDIT_CARD", "PERSONAL_LOAN", "HOME_LOAN", "INSURANCE", "INVESTMENT_FUND")),
+
+            FieldDefinition.ofEnum("notification_preference",
+                    List.of("EMAIL", "SMS", "PUSH", "NONE")),
+
+            FieldDefinition.ofEnum("complaint_status",
+                    List.of("NONE", "OPEN", "IN_PROGRESS", "RESOLVED", "ESCALATED")),
+
+            FieldDefinition.ofEnum("promotion_eligibility",
+                    List.of("ELIGIBLE", "NOT_ELIGIBLE", "PENDING_REVIEW", "OPT_OUT")),
+
+            FieldDefinition.ofEnum("current_location_type",
+                    List.of("HOME", "OFFICE", "TRAVEL", "ABROAD", "UNKNOWN")),
+
+            FieldDefinition.ofEnum("card_status",
+                    List.of("ACTIVE", "BLOCKED", "EXPIRED", "LOST", "STOLEN")),
+
+            FieldDefinition.ofEnum("loan_repayment_status",
+                    List.of("ON_TIME", "OVERDUE_1_30", "OVERDUE_31_90", "OVERDUE_90_PLUS", "NO_LOAN")),
+
+            FieldDefinition.ofEnum("investment_risk_appetite_current",
+                    List.of("CONSERVATIVE", "MODERATE", "AGGRESSIVE", "SPECULATIVE")),
+
+            FieldDefinition.ofEnum("contact_outcome",
+                    List.of("ANSWERED", "NOT_ANSWERED", "CALLBACK_REQUESTED", "DO_NOT_CONTACT")),
+
+            FieldDefinition.ofEnum("churn_risk_flag",
+                    List.of("LOW", "MEDIUM", "HIGH", "CHURNED")),
+
+            FieldDefinition.ofEnum("upsell_flag",
+                    List.of("NONE", "TARGETED", "ACCEPTED", "REJECTED")),
+
+            FieldDefinition.ofEnum("fraud_alert_level",
+                    List.of("NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL")),
+
+            FieldDefinition.ofEnum("digital_engagement_level",
+                    List.of("INACTIVE", "LOW", "MEDIUM", "HIGH", "POWER_USER")),
+
+            FieldDefinition.ofEnum("active_account_type",
+                    List.of("CHECKING", "SAVINGS", "CURRENT", "FIXED_DEPOSIT", "MULTI_CURRENCY")),
+
+            FieldDefinition.ofEnum("last_interaction_channel",
+                    List.of("MOBILE_APP", "WEB", "ATM", "BRANCH", "CALL_CENTER", "CHATBOT")),
+
+            FieldDefinition.ofEnum("offer_response",
+                    List.of("ACCEPTED", "DECLINED", "PENDING", "EXPIRED", "NOT_PRESENTED")),
+
+            FieldDefinition.ofEnum("kyc_refresh_status",
+                    List.of("UP_TO_DATE", "REFRESH_NEEDED", "IN_PROGRESS", "OVERDUE")),
+
+            FieldDefinition.ofEnum("email_engagement_status",
+                    List.of("OPENED", "CLICKED", "UNSUBSCRIBED", "BOUNCED", "NOT_SENT")),
+
+            FieldDefinition.ofEnum("sms_delivery_status",
+                    List.of("DELIVERED", "FAILED", "PENDING", "OPT_OUT")),
+
+            FieldDefinition.ofEnum("current_loan_purpose",
+                    List.of("PERSONAL", "BUSINESS", "EDUCATION", "HOME_IMPROVEMENT", "VEHICLE", "TRAVEL", "MEDICAL", "NONE")),
+
+            FieldDefinition.ofEnum("credit_card_usage_status",
+                    List.of("ACTIVE", "DORMANT", "OVER_LIMIT", "BLOCKED", "NO_CARD")),
+
+            FieldDefinition.ofEnum("support_ticket_status",
+                    List.of("NONE", "OPEN", "IN_PROGRESS", "RESOLVED", "ESCALATED")),
+
+            FieldDefinition.ofEnum("financial_stress_indicator",
+                    List.of("NONE", "LOW", "MEDIUM", "HIGH")),
+
+            FieldDefinition.ofEnum("referral_status",
+                    List.of("NONE", "REFERRED_OTHERS", "BEING_REFERRED", "CONVERTED")),
+
+            FieldDefinition.ofEnum("last_app_feature_used",
+                    List.of("TRANSFER", "QR_PAY", "BILL_PAY", "SAVINGS_GOAL", "INVEST", "INSURANCE", "NONE")),
+
+            FieldDefinition.ofEnum("beneficiary_relationship",
+                    List.of("SELF", "FAMILY", "BUSINESS", "THIRD_PARTY", "CHARITY")),
+
+            FieldDefinition.ofEnum("transaction_currency",
+                    List.of("VND", "USD", "EUR", "KRW", "JPY", "SGD", "AUD")),
+
+            FieldDefinition.ofEnum("data_consent_status",
+                    List.of("FULL_CONSENT", "PARTIAL_CONSENT", "NO_CONSENT", "WITHDRAWN")),
+
+            FieldDefinition.ofEnum("spending_interest_category",
+                    List.of("TRAVEL", "DINING", "SHOPPING", "SPORTS", "TECH", "HEALTH", "EDUCATION", "FINANCE")),
+
+            FieldDefinition.ofEnum("installment_payment_active",
+                    List.of("YES", "NO")),
+
+            FieldDefinition.ofEnum("overdraft_usage_status",
+                    List.of("NONE", "ACTIVE", "OVERDUE")),
+
+            FieldDefinition.ofEnum("wealth_segment_flag",
+                    List.of("MASS", "AFFLUENT", "HIGH_NET_WORTH", "ULTRA_HIGH_NET_WORTH")),
+
+            FieldDefinition.ofEnum("recent_trigger_event",
+                    List.of("LOGIN", "TRANSACTION", "INQUIRY", "COMPLAINT", "OFFER_VIEW", "PROFILE_UPDATE", "NONE"))
+    ).map(fd -> fd.withCategory("dynamic_categorical")).toList();
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // 3. STATIC NUMERIC  (60 fields, ratio = 3)
+    //    Fixed numeric attributes per customer ID (e.g. age, credit score).
+    //    Referenced in rule expressions with the "_current" suffix.
+    // ══════════════════════════════════════════════════════════════════════════
+    public static final List<FieldDefinition> STATIC_NUMERIC_FIELDS =
+            Stream.of(
+
+            // ── Demographic & profile ────────────────────────────────────────
+            FieldDefinition.ofIntRange("age",                          18,  100),
+            FieldDefinition.ofIntRange("tenure_months",                1,   600),
+            FieldDefinition.ofIntRange("employment_years",             0,   50),
+            FieldDefinition.ofIntRange("number_of_dependents",         0,   10),
+            FieldDefinition.ofIntRange("years_at_current_address",     0,   50),
+            FieldDefinition.ofIntRange("preferred_contact_hour",       0,   23),
+
+            // ── Product holdings ─────────────────────────────────────────────
+            FieldDefinition.ofIntRange("number_of_products_held",      1,   20),
+            FieldDefinition.ofIntRange("total_loan_count",             0,   10),
+            FieldDefinition.ofIntRange("total_card_count",             0,   5),
+            FieldDefinition.ofIntRange("total_account_count",          1,   10),
+            FieldDefinition.ofIntRange("property_ownership_count",     0,   5),
+            FieldDefinition.ofIntRange("vehicle_count",                0,   5),
+
+            // ── Credit & risk scores ─────────────────────────────────────────
+            FieldDefinition.ofIntRange("base_credit_score",            300, 850),
+            FieldDefinition.ofIntRange("kyc_score",                    0,   100),
+            FieldDefinition.ofIntRange("aml_risk_score_baseline",      0,   100),
+            FieldDefinition.ofIntRange("fraud_risk_score_baseline",    0,   100),
+            FieldDefinition.ofIntRange("behavioral_score_baseline",    0,   1000),
+            FieldDefinition.ofIntRange("digital_adoption_score",       0,   100),
+            FieldDefinition.ofIntRange("engagement_score_baseline",    0,   100),
+            FieldDefinition.ofIntRange("financial_literacy_score",     0,   100),
+
+            // ── Propensity scores ─────────────────────────────────────────────
+            FieldDefinition.ofIntRange("propensity_churn_score",       0,   100),
+            FieldDefinition.ofIntRange("propensity_credit_score",      0,   100),
+            FieldDefinition.ofIntRange("propensity_insurance_score",   0,   100),
+            FieldDefinition.ofIntRange("propensity_invest_score",      0,   100),
+            FieldDefinition.ofIntRange("risk_adjusted_return_score",   0,   100),
+            FieldDefinition.ofIntRange("clv_segment_score",            0,   1000),
+            FieldDefinition.ofIntRange("nps_score_baseline",           0,   10),
+            FieldDefinition.ofIntRange("referral_quality_score",       0,   100),
+            FieldDefinition.ofIntRange("social_media_influence_score", 0,   1000),
+
+            // ── Transactional baselines ───────────────────────────────────────
+            FieldDefinition.ofIntRange("avg_monthly_transaction_count",    0,   200),
+            FieldDefinition.ofIntRange("loyalty_points_balance",           0,   100000),
+            FieldDefinition.ofIntRange("total_referrals_made",             0,   50),
+            FieldDefinition.ofIntRange("total_complaints_historical",      0,   20),
+            FieldDefinition.ofIntRange("base_txn_frequency_per_month",     0,   200),
+
+            // ── Ratio & percentage baselines ─────────────────────────────────
+            FieldDefinition.ofFloatRange("max_credit_utilization_pct",      0.0,  100.0),
+            FieldDefinition.ofFloatRange("debt_to_income_ratio",            0.0,  10.0),
+            FieldDefinition.ofFloatRange("savings_rate_pct",                0.0,  100.0),
+            FieldDefinition.ofFloatRange("credit_utilization_ratio_baseline", 0.0, 1.0),
+            FieldDefinition.ofFloatRange("mortgage_to_value_ratio",         0.0,  1.0),
+
+            // ── Monetary baselines (VND) ──────────────────────────────────────
+            FieldDefinition.ofFloatRange("credit_limit_vnd",                0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("monthly_income_vnd",              1_000_000.0, 200_000_000.0),
+            FieldDefinition.ofFloatRange("base_loan_amount_vnd",            0.0, 5_000_000_000.0),
+            FieldDefinition.ofFloatRange("initial_deposit_vnd",             0.0,   100_000_000.0),
+            FieldDefinition.ofFloatRange("home_loan_outstanding_vnd",       0.0, 3_000_000_000.0),
+            FieldDefinition.ofFloatRange("personal_loan_outstanding_vnd",   0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("savings_balance_baseline_vnd",    0.0, 1_000_000_000.0),
+            FieldDefinition.ofFloatRange("fixed_deposit_total_vnd",         0.0, 2_000_000_000.0),
+            FieldDefinition.ofFloatRange("investment_portfolio_vnd",        0.0, 5_000_000_000.0),
+            FieldDefinition.ofFloatRange("annual_insurance_premium_vnd",    0.0,    50_000_000.0),
+            FieldDefinition.ofFloatRange("base_monthly_expense_vnd",        0.0,   100_000_000.0),
+            FieldDefinition.ofFloatRange("max_single_transaction_vnd",      0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("lifetime_value_estimate_vnd",     0.0, 10_000_000_000.0),
+            FieldDefinition.ofFloatRange("avg_monthly_income_6m_vnd",       0.0,   200_000_000.0),
+            FieldDefinition.ofFloatRange("avg_monthly_spend_6m_vnd",        0.0,   100_000_000.0),
+            FieldDefinition.ofFloatRange("cross_sell_revenue_vnd",          0.0,   100_000_000.0),
+            FieldDefinition.ofFloatRange("total_fee_paid_lifetime_vnd",     0.0,   100_000_000.0),
+            FieldDefinition.ofFloatRange("total_interest_earned_lifetime_vnd", 0.0, 100_000_000.0),
+            FieldDefinition.ofFloatRange("total_interest_paid_lifetime_vnd", 0.0,  500_000_000.0),
+            FieldDefinition.ofFloatRange("max_overdraft_approved_vnd",      0.0,   100_000_000.0),
+
+            FieldDefinition.ofIntRange("avg_account_age_months",       0,   600)
+    ).map(fd -> fd.withCategory("static_numeric")).toList();
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // 4. DYNAMIC NUMERIC  (80 fields, ratio = 4)
+    //    Real-time metrics that vary with every event.
+    // ══════════════════════════════════════════════════════════════════════════
+    public static final List<FieldDefinition> DYNAMIC_NUMERIC_FIELDS =
+            Stream.of(
+
+            // ── Score / percentage metrics (small range) ──────────────────────
+            FieldDefinition.ofFloatRange("current_credit_utilization_pct",    0.0,   100.0),
+            FieldDefinition.ofFloatRange("session_activity_score",            0.0,   100.0),
+            FieldDefinition.ofFloatRange("transaction_risk_score",            0.0,   100.0),
+            FieldDefinition.ofFloatRange("fraud_probability_score",           0.0,   100.0),
+            FieldDefinition.ofFloatRange("real_time_churn_risk_score",        0.0,   100.0),
+            FieldDefinition.ofFloatRange("real_time_upsell_score",            0.0,   100.0),
+            FieldDefinition.ofFloatRange("real_time_fraud_score",             0.0,   100.0),
+            FieldDefinition.ofFloatRange("geolocation_risk_score",            0.0,   100.0),
+            FieldDefinition.ofFloatRange("device_trust_score",                0.0,   100.0),
+            FieldDefinition.ofFloatRange("ip_reputation_score",               0.0,   100.0),
+            FieldDefinition.ofFloatRange("transaction_velocity_score",        0.0,   100.0),
+            FieldDefinition.ofFloatRange("behavioral_anomaly_score",          0.0,   100.0),
+            FieldDefinition.ofFloatRange("recent_product_interest_score",     0.0,   100.0),
+            FieldDefinition.ofFloatRange("campaign_response_rate_pct",        0.0,   100.0),
+            FieldDefinition.ofFloatRange("spend_consistency_score",           0.0,   100.0),
+            FieldDefinition.ofFloatRange("account_health_score",              0.0,   100.0),
+            FieldDefinition.ofFloatRange("digital_transaction_ratio_pct",     0.0,   100.0),
+            FieldDefinition.ofFloatRange("cross_sell_acceptance_rate_pct",    0.0,   100.0),
+            FieldDefinition.ofFloatRange("savings_goal_completion_pct",       0.0,   100.0),
+            FieldDefinition.ofFloatRange("data_consent_score",                0.0,   100.0),
+            FieldDefinition.ofFloatRange("merchant_category_diversity_score", 0.0,   100.0),
+            FieldDefinition.ofFloatRange("product_usage_breadth_score",       0.0,   100.0),
+
+            // ── Timing metrics ────────────────────────────────────────────────
+            FieldDefinition.ofFloatRange("response_latency_ms",               0.0,   5_000.0),
+            FieldDefinition.ofFloatRange("session_duration_seconds",          0.0,   3_600.0),
+            FieldDefinition.ofFloatRange("idle_time_seconds",                 0.0,   1_800.0),
+            FieldDefinition.ofFloatRange("typing_speed_cpm",                  0.0,   500.0),
+
+            // ── Event count metrics ───────────────────────────────────────────
+            FieldDefinition.ofIntRange("current_nps_response",                0,     10),
+            FieldDefinition.ofIntRange("login_attempts_count",                0,     10),
+            FieldDefinition.ofIntRange("failed_transactions_count_today",     0,     20),
+            FieldDefinition.ofIntRange("successful_transactions_count_today", 0,     100),
+            FieldDefinition.ofIntRange("pages_viewed_session",                0,     200),
+            FieldDefinition.ofIntRange("products_viewed_session",             0,     50),
+            FieldDefinition.ofIntRange("offers_clicked_today",                0,     20),
+            FieldDefinition.ofIntRange("notifications_received_today",        0,     50),
+            FieldDefinition.ofIntRange("support_calls_this_month",            0,     20),
+            FieldDefinition.ofIntRange("atm_withdrawals_this_week",           0,     20),
+            FieldDefinition.ofIntRange("pos_transactions_today",              0,     50),
+            FieldDefinition.ofIntRange("online_transfers_today",              0,     30),
+            FieldDefinition.ofIntRange("bill_payments_this_month",            0,     50),
+            FieldDefinition.ofIntRange("app_session_count_today",             0,     30),
+
+            // ── Real-time monetary amounts (VND, large range) ─────────────────
+            FieldDefinition.ofFloatRange("current_balance_vnd",                  0.0, 1_000_000_000.0),
+            FieldDefinition.ofFloatRange("last_transaction_amount_vnd",          0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("daily_spend_total_vnd",                0.0,   100_000_000.0),
+            FieldDefinition.ofFloatRange("weekly_spend_total_vnd",               0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("monthly_spend_total_vnd",              0.0, 2_000_000_000.0),
+            FieldDefinition.ofFloatRange("current_credit_card_balance_vnd",      0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("pending_transaction_amount_vnd",       0.0,   200_000_000.0),
+            FieldDefinition.ofFloatRange("atm_withdrawal_amount_today_vnd",      0.0,   100_000_000.0),
+            FieldDefinition.ofFloatRange("online_purchase_amount_today_vnd",     0.0,   100_000_000.0),
+            FieldDefinition.ofFloatRange("bill_payment_amount_this_month_vnd",   0.0,    50_000_000.0),
+            FieldDefinition.ofFloatRange("loan_repayment_amount_this_month_vnd", 0.0,   100_000_000.0),
+            FieldDefinition.ofFloatRange("insurance_premium_this_month_vnd",     0.0,    10_000_000.0),
+            FieldDefinition.ofFloatRange("savings_deposit_this_month_vnd",       0.0,   200_000_000.0),
+            FieldDefinition.ofFloatRange("transfer_amount_today_vnd",            0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("top_up_amount_today_vnd",              0.0,    10_000_000.0),
+            FieldDefinition.ofFloatRange("investment_buy_amount_today_vnd",      0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("investment_sell_amount_today_vnd",     0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("forex_exchange_amount_today_vnd",      0.0,   200_000_000.0),
+            FieldDefinition.ofFloatRange("overdraft_used_amount_vnd",            0.0,   100_000_000.0),
+            FieldDefinition.ofFloatRange("available_balance_vnd",                0.0, 1_000_000_000.0),
+            FieldDefinition.ofFloatRange("credit_card_payment_amount_vnd",       0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("cashback_earned_this_month_vnd",       0.0,    10_000_000.0),
+            FieldDefinition.ofFloatRange("late_fee_charged_vnd",                 0.0,     2_000_000.0),
+            FieldDefinition.ofFloatRange("interest_charged_this_month_vnd",      0.0,    50_000_000.0),
+            FieldDefinition.ofFloatRange("interest_earned_this_month_vnd",       0.0,    20_000_000.0),
+            FieldDefinition.ofFloatRange("minimum_payment_due_vnd",              0.0,    50_000_000.0),
+            FieldDefinition.ofFloatRange("excess_payment_vnd",                   0.0,   100_000_000.0),
+            FieldDefinition.ofFloatRange("merchant_spend_top_category_vnd",      0.0,    50_000_000.0),
+            FieldDefinition.ofFloatRange("fixed_deposit_maturity_amount_vnd",    0.0, 2_000_000_000.0),
+            FieldDefinition.ofFloatRange("fund_nav_current_vnd",                 0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("stock_portfolio_value_vnd",            0.0, 5_000_000_000.0),
+            FieldDefinition.ofFloatRange("vehicle_loan_outstanding_vnd",         0.0, 1_000_000_000.0),
+            FieldDefinition.ofFloatRange("education_loan_outstanding_vnd",       0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("total_outstanding_debt_vnd",           0.0, 10_000_000_000.0),
+            FieldDefinition.ofFloatRange("gold_purchase_amount_vnd",             0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("reward_points_redeemed_value_vnd",     0.0,     5_000_000.0),
+            FieldDefinition.ofFloatRange("referral_bonus_earned_vnd",            0.0,     5_000_000.0),
+            FieldDefinition.ofFloatRange("foreign_currency_spend_vnd_equivalent",0.0,   100_000_000.0),
+            FieldDefinition.ofFloatRange("insurance_claim_amount_vnd",           0.0, 5_000_000_000.0),
+            FieldDefinition.ofFloatRange("property_valuation_vnd",               0.0, 20_000_000_000.0)
+    ).map(fd -> fd.withCategory("dynamic_numeric")).toList();
 }

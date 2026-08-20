@@ -2,99 +2,200 @@ package vdf.vdt.streaming.generator.rule_gen;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.vdf.streaming.generator.common.Constants;
+import vdf.vdt.streaming.generator.common.Constants;
+import vdf.vdt.streaming.generator.model.FieldDefinition;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.*;
 
+// Generates structured rule definitions (AST condition trees) for the 200-field CDP schema.
+//
+// Thresholds and enum values in expressions are derived from FieldDefinition metadata,
+// so generated conditions are domain-meaningful (e.g. loyalty_tier_current == 'GOLD').
+//
+// Window threshold formula:
+//   expectedEventsPerId = reqPerSecond * windowSeconds / idRange
+//   count threshold     = expectedEventsPerId * U[0.2, 3.0]
+//   sum threshold       = expectedEventsPerId * meanValue * U[0.2, 3.0]
+//   min/max/avg         = random value within [field.minValue, field.maxValue]
 public class RuleGenerator {
-    private final List<Integer> schemaSizes = List.of(20, 50, 100, 150, 200);
-    private final String[] timeWindows = {"5s", "10s", "30s", "1m", "5m", "10m", "1h"};
-    private final String[] windowAggs = {"sum", "count", "avg", "max", "min"};
+
+    private final String[] timeWindows  = {"5s", "10s", "30s", "1m", "5m", "10m", "1h"};
+    private final String[] windowAggs   = {"sum", "count", "avg", "max", "min"};
+    // tumbling = fixed non-overlapping intervals, sliding = overlapping (step < window size)
+    private final String[] windowTypes  = {"tumbling", "sliding"};
     private final Random random = new Random();
 
+    private final int reqPerSecond;
+    private final int idRange;
+
+    public RuleGenerator(int idRange, int reqPerSecond) {
+        this.idRange      = Math.max(1, idRange);
+        this.reqPerSecond = reqPerSecond;
+    }
+
+    // Generates totalRules rules and writes them as a JSON array to filePath.
     public void generateRulesToFile(int totalRules, String filePath) throws IOException {
-        List<Map<String, Object>> allRules = new ArrayList<>();
-        int rulesPerSchema = totalRules / 5;
+        List<Map<String, Object>> allRules = new ArrayList<>(totalRules);
 
-        for (int size : schemaSizes) {
-            for (int i = 0; i < rulesPerSchema; i++) {
-                Map<String, Object> rule = new LinkedHashMap<>();
-                rule.put("rule_id", "rule_" + size + "_" + i);
-                rule.put("schema_fields_count", size);
-
-                // Độ cao cây điều kiện random từ 2 đến 5
-                int maxDepth = random.nextInt(4) + 2;
-                rule.put("condition_tree", generateNode(size, 1, maxDepth));
-
-                allRules.add(rule);
-            }
+        for (int i = 0; i < totalRules; i++) {
+            Map<String, Object> rule = new LinkedHashMap<>();
+            rule.put("rule_id",             "rule_200_" + i);
+            rule.put("schema_fields_count", Constants.TOTAL_FIELDS);
+            rule.put("condition_tree",      generateNode(1, random.nextInt(4) + 2));
+            allRules.add(rule);
         }
 
-        // Ghi ra file JSON tại địa chỉ được chỉ định
         ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
         mapper.writeValue(new File(filePath), allRules);
         System.out.println("Successfully generated " + totalRules + " rules into: " + filePath);
     }
 
-    private Map<String, Object> generateNode(int schemaSize, int currentDepth, int maxDepth) {
+    // Recursively builds one AST node. Depth is randomised between 2 and 5 total levels.
+    // At max depth (or randomly earlier) produces a CONDITION leaf, otherwise AND/OR gate.
+    private Map<String, Object> generateNode(int currentDepth, int maxDepth) {
         Map<String, Object> node = new LinkedHashMap<>();
-
         if (currentDepth >= maxDepth || random.nextBoolean()) {
-            // Leaf node: Biểu thức đơn
-            node.put("type", "CONDITION");
-            node.put("expression", generateExpression(schemaSize));
+            node.put("type",       "CONDITION");
+            node.put("expression", generateExpression());
         } else {
-            // Internal node: AND / OR
             node.put("type", random.nextBoolean() ? "AND" : "OR");
-            List<Map<String, Object>> children = new ArrayList<>();
-            children.add(generateNode(schemaSize, currentDepth + 1, maxDepth));
-            children.add(generateNode(schemaSize, currentDepth + 1, maxDepth));
-            node.put("children", children);
+            node.put("children", List.of(
+                    generateNode(currentDepth + 1, maxDepth),
+                    generateNode(currentDepth + 1, maxDepth)));
         }
         return node;
     }
 
-    private String generateExpression(int schemaSize) {
-        List<String> numCols = Constants.NUMERIC_COLUMNS.get(schemaSize);
-        List<String> catCols = Constants.CATEGORICAL_COLUMNS.get(schemaSize);
+    // Picks one of four expression types at random.
+    private String generateExpression() {
+        return switch (random.nextInt(4)) {
+            case 0  -> buildCategoricalExpr();
+            case 1  -> buildRawNumericExpr();
+            case 2  -> buildWindowAggExpr();
+            default -> buildLinearCombinationExpr();
+        };
+    }
 
-        int exprType = random.nextInt(4); // Phân bổ đều các loại biểu thức
+    // Type 0: categorical expression using ENUM fields.
+    // Static fields are referenced as <field>_current (looks up latest stored state).
+    // Operators: == or !=. Value picked from the field's actual enum_values.
+    // Examples:
+    //   loyalty_tier_current == 'GOLD'
+    //   churn_risk_flag != 'CHURNED'
+    private String buildCategoricalExpr() {
+        boolean useStatic = random.nextBoolean();
+        List<FieldDefinition> pool = useStatic
+                ? Constants.STATIC_CATEGORICAL_FIELDS
+                : Constants.DYNAMIC_CATEGORICAL_FIELDS;
 
-        if (exprType == 0 && !catCols.isEmpty()) {
-            // Biểu thức định danh: chỉ có == hoặc !=
-            String col = catCols.get(random.nextInt(catCols.size()));
-            String op = random.nextBoolean() ? "==" : "!=";
-            return col + " " + op + " 'val_" + random.nextInt(5) + "'";
-        }
-        else if (exprType == 1 && !numCols.isEmpty()) {
-            // Biểu thức số dạng gốc: có ==, !=, <=, >=, <, >
-            String col = numCols.get(random.nextInt(numCols.size()));
-            String[] ops = {"==", "!=", "<=", ">=", "<", ">"};
-            String op = ops[random.nextInt(ops.length)];
-            return col + " " + op + " " + random.nextInt(100);
-        }
-        else if (exprType == 2 && !numCols.isEmpty()) {
-            // 5 dạng cửa sổ (sum/count/avg/max/min) kết hợp thời gian (s, m, h)
-            String col = numCols.get(random.nextInt(numCols.size()));
-            String agg = windowAggs[random.nextInt(windowAggs.length)];
-            String time = timeWindows[random.nextInt(timeWindows.length)];
-            String fieldExpr = col + "_" + agg + "_" + time;
+        FieldDefinition fd  = pool.get(random.nextInt(pool.size()));
+        String col          = useStatic ? fd.getName() + "_current" : fd.getName();
+        String op           = random.nextBoolean() ? "==" : "!=";
+        List<String> enums  = fd.getEnumValues();
+        String val          = enums.get(random.nextInt(enums.size()));
 
-            // Các biểu thức số cửa sổ chỉ có <= >= < >
-            String[] ops = {"<=", ">=", "<", ">"};
-            String op = ops[random.nextInt(ops.length)];
-            return fieldExpr + " " + op + " " + (random.nextInt(1000) + 10);
+        return col + " " + op + " '" + val + "'";
+    }
+
+    // Type 1: raw numeric expression using RANGE fields.
+    // Static fields referenced with _current suffix.
+    // Static fields allow full operator set (==, !=, <=, >=, <, >).
+    // Dynamic fields allow inequalities only (<=, >=, <, >).
+    // Threshold is a random value within [field.minValue, field.maxValue].
+    // Examples:
+    //   age_current >= 35
+    //   daily_spend_total_vnd > 50000000.00
+    private String buildRawNumericExpr() {
+        boolean useStatic = random.nextBoolean();
+        List<FieldDefinition> pool = useStatic
+                ? Constants.STATIC_NUMERIC_FIELDS
+                : Constants.DYNAMIC_NUMERIC_FIELDS;
+
+        FieldDefinition fd = pool.get(random.nextInt(pool.size()));
+        String col         = useStatic ? fd.getName() + "_current" : fd.getName();
+
+        String[] ops = useStatic
+                ? new String[]{"==", "!=", "<=", ">=", "<", ">"}
+                : new String[]{"<=", ">=", "<", ">"};
+        String op = ops[random.nextInt(ops.length)];
+
+        double threshold = randomInRange(fd);
+
+        return col + " " + op + " " + formatThreshold(fd, threshold);
+    }
+
+    // Type 2: window aggregation expression using dynamic numeric fields only.
+    // Expression name format: <field>_<windowType>_<agg>_<time>
+    // Window types: tumbling (fixed non-overlapping) or sliding (overlapping).
+    // Threshold is derived from expected event count in the window per customer ID.
+    // Examples:
+    //   daily_spend_total_vnd_tumbling_sum_1h >= 50000000.00
+    //   fraud_probability_score_sliding_count_5m > 3.00
+    private String buildWindowAggExpr() {
+        FieldDefinition fd = Constants.DYNAMIC_NUMERIC_FIELDS
+                .get(random.nextInt(Constants.DYNAMIC_NUMERIC_FIELDS.size()));
+
+        String agg      = windowAggs[random.nextInt(windowAggs.length)];
+        String time     = timeWindows[random.nextInt(timeWindows.length)];
+        String winType  = windowTypes[random.nextInt(windowTypes.length)];
+        String[] ops = {"<=", ">=", "<", ">"};
+        String op   = ops[random.nextInt(ops.length)];
+
+        double windowSeconds       = parseWindowToSeconds(time);
+        double expectedEventsPerId = Math.max(0.1, (double) reqPerSecond * windowSeconds / idRange);
+        double meanValue           = (fd.getMinValue() + fd.getMaxValue()) / 2.0;
+
+        double threshold = switch (agg) {
+            case "count" -> expectedEventsPerId * (0.2 + random.nextDouble() * 2.8);
+            case "sum"   -> expectedEventsPerId * meanValue * (0.2 + random.nextDouble() * 2.8);
+            default      -> randomInRange(fd); // min, max, avg -> value within field range
+        };
+
+        String fieldExpr = fd.getName() + "_" + winType + "_" + agg + "_" + time;
+        return fieldExpr + " " + op + " " + String.format(Locale.US, "%.2f", threshold);
+    }
+
+    // Type 3: linear combination of two numeric fields (dynamic or static).
+    // Formula: (field1 * 0.7 + field2 * 0.3) op threshold
+    // Threshold is random within the combined [min, max] range of both fields.
+    // Example:
+    //   (current_balance_vnd * 0.7 + monthly_spend_total_vnd * 0.3) >= 500000000.00
+    private String buildLinearCombinationExpr() {
+        List<FieldDefinition> all = new ArrayList<>(Constants.DYNAMIC_NUMERIC_FIELDS);
+        all.addAll(Constants.STATIC_NUMERIC_FIELDS);
+
+        FieldDefinition fd1 = all.get(random.nextInt(all.size()));
+        FieldDefinition fd2 = all.get(random.nextInt(all.size()));
+
+        String[] ops = {"<=", ">=", "<", ">"};
+        String op = ops[random.nextInt(ops.length)];
+
+        double maxOfTwo = Math.max(fd1.getMaxValue(), fd2.getMaxValue());
+        double minOfTwo = Math.min(fd1.getMinValue(), fd2.getMinValue());
+        double threshold = minOfTwo + (maxOfTwo - minOfTwo) * random.nextDouble();
+
+        return "(" + fd1.getName() + " * 0.7 + " + fd2.getName() + " * 0.3) "
+                + op + " " + String.format(Locale.US, "%.2f", threshold);
+    }
+
+    private double randomInRange(FieldDefinition fd) {
+        return fd.getMinValue() + (fd.getMaxValue() - fd.getMinValue()) * random.nextDouble();
+    }
+
+    // INT fields are formatted without decimals for readability.
+    private String formatThreshold(FieldDefinition fd, double value) {
+        if ("INT".equals(fd.getType())) {
+            return String.format(Locale.US, "%.0f", value);
         }
-        else {
-            // Biểu thức tuyến tính kết hợp các cột số
-            if (numCols.size() < 2) return "s1_num_age > 18";
-            String c1 = numCols.get(random.nextInt(numCols.size()));
-            String c2 = numCols.get(random.nextInt(numCols.size()));
-            String[] ops = {"<=", ">=", "<", ">"};
-            String op = ops[random.nextInt(ops.length)];
-            return "(" + c1 + " * 0.7 + " + c2 + " * 0.3) " + op + " " + random.nextInt(500);
-        }
+        return String.format(Locale.US, "%.2f", value);
+    }
+
+    private double parseWindowToSeconds(String time) {
+        if (time.endsWith("s")) return Double.parseDouble(time.replace("s", ""));
+        if (time.endsWith("m")) return Double.parseDouble(time.replace("m", "")) * 60;
+        if (time.endsWith("h")) return Double.parseDouble(time.replace("h", "")) * 3600;
+        return 10.0;
     }
 }

@@ -2,84 +2,104 @@ package vdf.vdt.streaming.generator.data_gen;
 
 import vdf.vdt.streaming.generator.common.Constants;
 import vdf.vdt.streaming.generator.common.KafkaProducerClient;
+import vdf.vdt.streaming.generator.model.FieldDefinition;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.*;
 
+// Continuously generates CDP customer events for the 200-field schema and pushes them to Kafka.
+// Every message carries a schema-version header so downstream consumers can look up the
+// matching schema definition from the schema topic.
 public class DataGenerator {
+
     private final KafkaProducerClient kafkaClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final List<Integer> schemaSizes = List.of(20, 50, 100, 150, 200);
 
     public DataGenerator(KafkaProducerClient kafkaClient) {
         this.kafkaClient = kafkaClient;
     }
 
-    public void startGenerating(int reqPerSecond, int idRange, String kafkaTopic) {
-        System.out.println("Starting Data Generator with " + reqPerSecond + " req/s, ID Range: " + idRange);
-        Random random = new Random();
-        long intervalMillis = 1000L / Math.max(1, reqPerSecond);
+    // Runs the event-generation loop indefinitely.
+    //   reqPerSecond - target event throughput
+    //   idRange      - pool size of distinct customer IDs
+    //   kafkaTopic   - destination Kafka topic for data events
+    //   version      - active schema version (e.g. "v1"); written into the Kafka header
+    public void startGenerating(int reqPerSecond, int idRange, String kafkaTopic, String version) {
+        System.out.println("Starting CDP Data Generator | schema: " + version
+                + " | throughput: " + reqPerSecond + " req/s | ID pool: " + idRange);
 
-        int schemaIndex = 0;
+        Random random        = new Random();
+        long intervalMillis  = 1000L / Math.max(1, reqPerSecond);
+        Map<String, String> headers = Map.of("schema-version", version);
+
         while (true) {
             long startTime = System.currentTimeMillis();
-
-            // Luân phiên chọn 1 trong 5 schema: 20, 50, 100, 150, 200 trường
-            int totalFields = schemaSizes.get(schemaIndex);
-            schemaIndex = (schemaIndex + 1) % schemaSizes.size();
-
             try {
-                Map<String, Object> event = generateEvent(totalFields, idRange, random);
+                Map<String, Object> event = generateEvent(idRange, random, version);
                 String jsonStr = objectMapper.writeValueAsString(event);
-
-                // Gửi vào kafka với key là id để đảm bảo gom cụm theo Keyed State
-                kafkaClient.send(kafkaTopic, event.get("id").toString(), jsonStr);
-
+                kafkaClient.sendWithHeader(kafkaTopic, event.get("id").toString(), jsonStr, headers);
             } catch (Exception e) {
                 e.printStackTrace();
             }
 
-            // Kiểm soát tốc độ req/s
             long elapsed = System.currentTimeMillis() - startTime;
             if (elapsed < intervalMillis) {
-                try {
-                    Thread.sleep(intervalMillis - elapsed);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
+                try { Thread.sleep(intervalMillis - elapsed); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
             }
         }
     }
 
-    private Map<String, Object> generateEvent(int totalFields, int idRange, Random random) {
+    // Builds one customer event.
+    // Static fields (categorical + numeric) use a seeded Random derived from the entity ID,
+    // so the same customer ID always produces the same static attribute values.
+    // Dynamic fields use the global (unseeded) Random and vary each event.
+    private Map<String, Object> generateEvent(int idRange, Random globalRandom, String version) {
         Map<String, Object> event = new LinkedHashMap<>();
 
-        // 1. Cột ID có thể lặp lại trong khoảng idRange
-        long entityId = random.nextInt(idRange) + 1;
-        event.put("id", "ID_" + entityId);
-        event.put("timestamp", System.currentTimeMillis());
+        long entityId = globalRandom.nextInt(idRange) + 1;
+        event.put("id",             "ID_" + entityId);
+        event.put("timestamp",      System.currentTimeMillis());
+        event.put("schema_version", version);
 
-        // 2. Tỷ lệ: 1/3 cột định danh, 2/3 cột số
-        List<String> catCols = Constants.CATEGORICAL_COLUMNS.get(totalFields);
-        List<String> numCols = Constants.NUMERIC_COLUMNS.get(totalFields);
+        // Seeded per-entity random - static attributes are deterministic for a given ID
+        Random idRandom = new Random(entityId * 31L);
 
-        // Sinh dữ liệu định danh
-        for (String col : catCols) {
-            event.put(col, "val_" + random.nextInt(10));
+        for (FieldDefinition fd : Constants.STATIC_CATEGORICAL_FIELDS) {
+            event.put(fd.getName(), generateFieldValue(fd, idRandom));
         }
-
-        // Sinh dữ liệu số với khoảng giá trị đa dạng
-        for (String col : numCols) {
-            if (col.contains("age")) {
-                event.put(col, random.nextInt(80) + 10); // Khoảng 10 - 90
-            } else if (col.contains("amount") || col.contains("balance")) {
-                event.put(col, 2000000 + (10000000 - 2000000) * random.nextDouble()); // Khoảng 2tr - 10tr
-            } else {
-                event.put(col, random.nextDouble() * 100); // Khoảng 0 - 100
-            }
+        for (FieldDefinition fd : Constants.DYNAMIC_CATEGORICAL_FIELDS) {
+            event.put(fd.getName(), generateFieldValue(fd, globalRandom));
+        }
+        for (FieldDefinition fd : Constants.STATIC_NUMERIC_FIELDS) {
+            event.put(fd.getName(), generateFieldValue(fd, idRandom));
+        }
+        for (FieldDefinition fd : Constants.DYNAMIC_NUMERIC_FIELDS) {
+            event.put(fd.getName(), generateFieldValue(fd, globalRandom));
         }
 
         return event;
+    }
+
+    // Generates a valid value for a field based on its constraint.
+    //   ENUM  -> random pick from enum_values
+    //   INT   -> random integer in [min, max]
+    //   FLOAT -> random double in [min, max)
+    private Object generateFieldValue(FieldDefinition fd, Random random) {
+        if ("ENUM".equals(fd.getConstraintKind())) {
+            List<String> values = fd.getEnumValues();
+            return values.get(random.nextInt(values.size()));
+        }
+
+        double min = fd.getMinValue();
+        double max = fd.getMaxValue();
+
+        if ("INT".equals(fd.getType())) {
+            int intMin = (int) min;
+            int intMax = (int) max;
+            return random.nextInt(intMax - intMin + 1) + intMin;
+        } else {
+            return min + (max - min) * random.nextDouble();
+        }
     }
 }
