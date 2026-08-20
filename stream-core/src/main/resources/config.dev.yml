@@ -1,0 +1,18 @@
+app:
+  name: "Stateful Processing Core"
+  env: "dev"
+  version: "1.0.0"
+
+kafka:
+  bootstrap_servers: "localhost:9092"
+  event_topics:
+    - "event-topic-source-1"
+    - "event-topic-source-2"
+  config_topic: "config-schema-topic"
+  group_id: "cdp-flink-group"
+
+database:
+  clickhouse:
+    url: "jdbc:clickhouse://localhost:8123/cdp"
+    user: "default"
+    password: ${CLICKHOUSE_PASSWORD:-}

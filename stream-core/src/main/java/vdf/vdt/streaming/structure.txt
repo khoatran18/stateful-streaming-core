@@ -1,0 +1,30 @@
+com.company.realtime.cdp
+│
+├── common              # Các lớp tiện ích chung, hằng số, exception
+│   ├── model           # Các POJO dùng chung (Event, Schema, Rule, AggregationResult)
+│   └── utils           # Thời gian, JSON parser, serialization helpers
+│
+├── schema              # Module quản lý Schema & Dynamic Parsing
+│   ├── parser          # Giải mã sự kiện thô dựa trên schema động (source, version)
+│   └── state           # Broadcast state quản lý schema
+│
+├── aggregation         # Module 1: Xử lý luồng, chống skew & Tổng hợp cửa sổ 2 lớp
+│   ├── skew            # Xử lý 2 lớp: Thêm/xóa salt (_random), gộp kết quả Layer 1 -> Layer 2
+│   ├── window          # Ring buffer, bucket, quản lý MapState chứa POJO (sum, min, max, count, avg)
+│   └── optimizer       # Bộ kiểm tra trường dữ liệu (nếu số luật dùng field = 0 thì loại khỏi state)
+│
+├── indexation          # Module 2: Chỉ mục nghịch đảo & Tối ưu độ chọn lọc
+│   ├── frequency       # Thống kê Document Frequency của các trường
+│   └── inverted        # Dựng bảng tra ngược, thuật toán giao tập ứng viên (Intersection)
+│
+├── evaluation          # Module 3: Bộ máy đánh giá luật (Rule Engine)
+│   ├── expression      # Đánh giá biểu thức tuyến tính, trộn giá trị thô và tổng hợp
+│   ├── tree            # Cây điều kiện AND/OR/NOT có cắt nhánh sớm (Short-circuit)
+│   └── cooldown        # Cơ chế khử trùng kết quả (cooldown) trước khi bắn ra ngoài
+│
+├── sink                # Tầng ghi dữ liệu đích (ClickHouse, Kafka, Log...)
+│   └── batch           # Cơ chế ghi batch có thử lại (retry)
+│
+└── job                 # Định nghĩa các Apache Flink Job (Main class, Topology)
+    ├── TwoLayerPipelineJob.java
+    └── broadcast       # Broadcast ProcessFunction kết hợp schema & rule
