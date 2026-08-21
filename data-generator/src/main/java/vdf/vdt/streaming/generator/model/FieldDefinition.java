@@ -1,5 +1,6 @@
 package vdf.vdt.streaming.generator.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
@@ -101,6 +102,7 @@ public class FieldDefinition {
     public String getConstraintKind()                       { return constraintKind; }
     public void   setConstraintKind(String constraintKind)  { this.constraintKind = constraintKind; }
 
+    @JsonIgnore
     public String getCategory()                  { return category; }
     public void   setCategory(String category)   { this.category = category; }
 

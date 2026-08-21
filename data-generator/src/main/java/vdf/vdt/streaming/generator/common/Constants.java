@@ -5,20 +5,23 @@ import vdf.vdt.streaming.generator.model.FieldDefinition;
 import java.util.List;
 import java.util.stream.Stream;
 
-// Single-schema definition for the CDP event stream.
+// Schema definitions for the CDP event stream.
 //
-// 200 fields in ratio 1:2:3:4 across four categories:
-//   static_categorical  - 20 fields, fixed per customer ID (ENUM)
-//   dynamic_categorical - 40 fields, changes each event (ENUM)
-//   static_numeric      - 60 fields, fixed per customer ID (INT/FLOAT RANGE)
-//   dynamic_numeric     - 80 fields, real-time metrics per event (INT/FLOAT RANGE)
+// Legacy 200-field schema (used by rule_gen): 4 typed lists in ratio 1:2:3:4.
 //
-// Each list uses Stream.of(...).map(fd -> fd.withCategory(...)).toList() so every
-// FieldDefinition carries its category at runtime and in the serialised schema.
+// Dual-schema data generation (used by data_gen):
+//   Schema A - transaction events: 30 fields (3 sc / 6 dc / 9 sn / 12 dn)
+//   Schema B - system access logs: 30 fields (3 sc / 6 dc / 9 sn / 12 dn)
+//
+// Static fields are seeded per customer ID (deterministic).
+// Dynamic fields vary each event (global random).
 // All monetary amounts are in VND (Vietnamese Dong).
 public class Constants {
 
     public static final int TOTAL_FIELDS = 200;
+
+    public static final int SCHEMA_A_TOTAL_FIELDS = 30;
+    public static final int SCHEMA_B_TOTAL_FIELDS = 30;
 
     // ══════════════════════════════════════════════════════════════════════════
     // 1. STATIC CATEGORICAL  (20 fields, ratio = 1)
@@ -400,5 +403,127 @@ public class Constants {
             FieldDefinition.ofFloatRange("foreign_currency_spend_vnd_equivalent",0.0,   100_000_000.0),
             FieldDefinition.ofFloatRange("insurance_claim_amount_vnd",           0.0, 5_000_000_000.0),
             FieldDefinition.ofFloatRange("property_valuation_vnd",               0.0, 20_000_000_000.0)
+    ).map(fd -> fd.withCategory("dynamic_numeric")).toList();
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // SCHEMA A — Transaction Events  (30 fields: 3 sc / 6 dc / 9 sn / 12 dn)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    public static final List<FieldDefinition> SCHEMA_A_STATIC_CATEGORICAL_FIELDS =
+            Stream.of(
+            FieldDefinition.ofEnum("customer_segment",
+                    List.of("PREMIUM", "STANDARD", "BASIC", "VIP", "ENTERPRISE")),
+            FieldDefinition.ofEnum("loyalty_tier",
+                    List.of("BRONZE", "SILVER", "GOLD", "PLATINUM", "DIAMOND")),
+            FieldDefinition.ofEnum("risk_rating",
+                    List.of("LOW", "MEDIUM", "HIGH", "VERY_HIGH"))
+    ).map(fd -> fd.withCategory("static_categorical")).toList();
+
+    public static final List<FieldDefinition> SCHEMA_A_DYNAMIC_CATEGORICAL_FIELDS =
+            Stream.of(
+            FieldDefinition.ofEnum("transaction_type",
+                    List.of("TRANSFER", "PAYMENT", "WITHDRAWAL", "DEPOSIT", "TOP_UP", "REFUND")),
+            FieldDefinition.ofEnum("last_transaction_status",
+                    List.of("SUCCESS", "FAILED", "PENDING", "REVERSED", "CANCELLED")),
+            FieldDefinition.ofEnum("card_status",
+                    List.of("ACTIVE", "BLOCKED", "EXPIRED", "LOST", "STOLEN")),
+            FieldDefinition.ofEnum("active_product_category",
+                    List.of("SAVINGS", "CREDIT_CARD", "PERSONAL_LOAN", "HOME_LOAN", "INSURANCE", "INVESTMENT_FUND")),
+            FieldDefinition.ofEnum("loan_repayment_status",
+                    List.of("ON_TIME", "OVERDUE_1_30", "OVERDUE_31_90", "OVERDUE_90_PLUS", "NO_LOAN")),
+            FieldDefinition.ofEnum("transaction_currency",
+                    List.of("VND", "USD", "EUR", "KRW", "JPY", "SGD", "AUD"))
+    ).map(fd -> fd.withCategory("dynamic_categorical")).toList();
+
+    public static final List<FieldDefinition> SCHEMA_A_STATIC_NUMERIC_FIELDS =
+            Stream.of(
+            FieldDefinition.ofIntRange("age",                        18,  100),
+            FieldDefinition.ofIntRange("base_credit_score",          300, 850),
+            FieldDefinition.ofIntRange("tenure_months",              1,   600),
+            FieldDefinition.ofIntRange("number_of_products_held",    1,   20),
+            FieldDefinition.ofIntRange("total_loan_count",           0,   10),
+            FieldDefinition.ofIntRange("total_card_count",           0,   5),
+            FieldDefinition.ofFloatRange("credit_limit_vnd",         0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("monthly_income_vnd",       1_000_000.0, 200_000_000.0),
+            FieldDefinition.ofFloatRange("debt_to_income_ratio",     0.0,  10.0)
+    ).map(fd -> fd.withCategory("static_numeric")).toList();
+
+    public static final List<FieldDefinition> SCHEMA_A_DYNAMIC_NUMERIC_FIELDS =
+            Stream.of(
+            FieldDefinition.ofFloatRange("current_balance_vnd",                  0.0, 1_000_000_000.0),
+            FieldDefinition.ofFloatRange("last_transaction_amount_vnd",          0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("daily_spend_total_vnd",                0.0,   100_000_000.0),
+            FieldDefinition.ofFloatRange("pending_transaction_amount_vnd",       0.0,   200_000_000.0),
+            FieldDefinition.ofFloatRange("current_credit_card_balance_vnd",      0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("atm_withdrawal_amount_today_vnd",      0.0,   100_000_000.0),
+            FieldDefinition.ofFloatRange("transfer_amount_today_vnd",            0.0,   500_000_000.0),
+            FieldDefinition.ofFloatRange("loan_repayment_amount_this_month_vnd", 0.0,   100_000_000.0),
+            FieldDefinition.ofFloatRange("total_outstanding_debt_vnd",           0.0, 10_000_000_000.0),
+            FieldDefinition.ofIntRange("online_transfers_today",                  0,     30),
+            FieldDefinition.ofIntRange("failed_transactions_count_today",         0,     20),
+            FieldDefinition.ofIntRange("successful_transactions_count_today",     0,     100)
+    ).map(fd -> fd.withCategory("dynamic_numeric")).toList();
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // SCHEMA B — System Access Logs  (30 fields: 3 sc / 6 dc / 9 sn / 12 dn)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    public static final List<FieldDefinition> SCHEMA_B_STATIC_CATEGORICAL_FIELDS =
+            Stream.of(
+            FieldDefinition.ofEnum("home_province",
+                    List.of("HANOI", "HCM", "DANANG", "HAIPHONG", "CANTHO",
+                            "BINH_DUONG", "DONG_NAI", "QUANG_NINH", "NGHE_AN",
+                            "THANH_HOA", "KHANH_HOA", "LAM_DONG", "THAI_NGUYEN",
+                            "AN_GIANG", "THUA_THIEN_HUE", "LONG_AN", "BINH_THUAN",
+                            "VUNG_TAU", "HA_TINH", "NINH_BINH")),
+            FieldDefinition.ofEnum("preferred_language",
+                    List.of("VI", "EN", "ZH", "KO", "JA")),
+            FieldDefinition.ofEnum("customer_type",
+                    List.of("INDIVIDUAL", "CORPORATE", "SME"))
+    ).map(fd -> fd.withCategory("static_categorical")).toList();
+
+    public static final List<FieldDefinition> SCHEMA_B_DYNAMIC_CATEGORICAL_FIELDS =
+            Stream.of(
+            FieldDefinition.ofEnum("session_status",
+                    List.of("ACTIVE", "IDLE", "EXPIRED", "LOCKED")),
+            FieldDefinition.ofEnum("login_channel",
+                    List.of("MOBILE_APP", "WEB", "ATM", "BRANCH", "CALL_CENTER")),
+            FieldDefinition.ofEnum("device_type",
+                    List.of("IOS", "ANDROID", "DESKTOP", "TABLET")),
+            FieldDefinition.ofEnum("network_type",
+                    List.of("WIFI", "4G", "5G", "3G", "ETHERNET")),
+            FieldDefinition.ofEnum("auth_method",
+                    List.of("PASSWORD", "OTP", "BIOMETRIC", "PIN", "TOKEN")),
+            FieldDefinition.ofEnum("current_location_type",
+                    List.of("HOME", "OFFICE", "TRAVEL", "ABROAD", "UNKNOWN"))
+    ).map(fd -> fd.withCategory("dynamic_categorical")).toList();
+
+    public static final List<FieldDefinition> SCHEMA_B_STATIC_NUMERIC_FIELDS =
+            Stream.of(
+            FieldDefinition.ofIntRange("digital_adoption_score",          0,   100),
+            FieldDefinition.ofIntRange("engagement_score_baseline",        0,   100),
+            FieldDefinition.ofIntRange("behavioral_score_baseline",        0,   1000),
+            FieldDefinition.ofIntRange("avg_monthly_transaction_count",    0,   200),
+            FieldDefinition.ofIntRange("propensity_churn_score",           0,   100),
+            FieldDefinition.ofIntRange("nps_score_baseline",               0,   10),
+            FieldDefinition.ofIntRange("preferred_contact_hour",           0,   23),
+            FieldDefinition.ofIntRange("social_media_influence_score",     0,   1000),
+            FieldDefinition.ofIntRange("financial_literacy_score",         0,   100)
+    ).map(fd -> fd.withCategory("static_numeric")).toList();
+
+    public static final List<FieldDefinition> SCHEMA_B_DYNAMIC_NUMERIC_FIELDS =
+            Stream.of(
+            FieldDefinition.ofFloatRange("session_duration_seconds",          0.0,   3_600.0),
+            FieldDefinition.ofFloatRange("response_latency_ms",               0.0,   5_000.0),
+            FieldDefinition.ofFloatRange("idle_time_seconds",                 0.0,   1_800.0),
+            FieldDefinition.ofFloatRange("fraud_probability_score",           0.0,   100.0),
+            FieldDefinition.ofFloatRange("behavioral_anomaly_score",          0.0,   100.0),
+            FieldDefinition.ofFloatRange("transaction_velocity_score",        0.0,   100.0),
+            FieldDefinition.ofIntRange("login_attempts_count",                0,     10),
+            FieldDefinition.ofIntRange("pages_viewed_session",                0,     200),
+            FieldDefinition.ofIntRange("products_viewed_session",             0,     50),
+            FieldDefinition.ofIntRange("app_session_count_today",             0,     30),
+            FieldDefinition.ofIntRange("offers_clicked_today",                0,     20),
+            FieldDefinition.ofIntRange("notifications_received_today",        0,     50)
     ).map(fd -> fd.withCategory("dynamic_numeric")).toList();
 }

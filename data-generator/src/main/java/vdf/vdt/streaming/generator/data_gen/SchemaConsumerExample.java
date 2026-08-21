@@ -16,45 +16,34 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
 
-/**
- * End-to-end schema validation demo.
- *
- * <h2>Flow</h2>
- * <pre>
- *   Step 1 – Load schema registry
- *             Read stream-schema-registry topic from earliest.
- *             Topic uses cleanup.policy=compact → exactly 1 message per version key.
- *             Build: Map&lt;version, Map&lt;fieldName, FieldDefinition&gt;&gt;
- *
- *   Step 2 – Consume real data events from input.events
- *             For each record:
- *               a. Read Kafka header "schema-version"
- *               b. Parse JSON body → Map&lt;String, Object&gt;
- *               c. Look up schema version
- *               d. Validate every field (type + constraint)
- *               e. Print result
- * </pre>
- *
- * <h2>Schema topic: Log Compaction</h2>
- * <p>The schema topic uses {@code cleanup.policy=compact}: 1 message per version key (latest wins).
- * All distinct versions (v1, v2 …) are permanently retained. On restart, reading from
- * {@code earliest} yields exactly one authoritative schema per version.
- *
- * <pre>
- * kafka-topics.sh --create --bootstrap-server localhost:9092 \
- *   --topic stream-schema-registry --partitions 1 \
- *   --config cleanup.policy=compact \
- *   --config min.compaction.lag.ms=0 \
- *   --config delete.retention.ms=100
- * </pre>
- */
+// End-to-end schema validation demo for the dual-schema setup.
+//
+// Flow:
+//   Step 1 – Load schema registry from source.schema topic (from earliest).
+//             Key format in topic: "<version>:<source>" (e.g. "v2:A", "v2:B").
+//             Build: Map<"version:source", Map<fieldName, FieldDefinition>>
+//
+//   Step 2 – Consume real data events from source.event.
+//             For each record:
+//               a. Read Kafka headers "version" and "source"
+//               b. Parse JSON body -> Map<String, Object>
+//               c. Look up schema by "version:source"
+//               d. Validate every field (type + constraint)
+//               e. Print result
+//
+// Schema topic setup (log compaction keeps latest schema per version:source key):
+//   kafka-topics.sh --create --bootstrap-server localhost:9092 \
+//     --topic source.schema --partitions 1 \
+//     --config cleanup.policy=compact \
+//     --config min.compaction.lag.ms=0 \
+//     --config delete.retention.ms=100
 public class SchemaConsumerExample {
 
-    private static final String SCHEMA_TOPIC     = "stream-schema-registry";
-    private static final String DATA_TOPIC       = "input.events";
+    private static final String SCHEMA_TOPIC      = "source.schema";
+    private static final String DATA_TOPIC        = "source.event";
     private static final String BOOTSTRAP_SERVERS = "localhost:9092";
 
-    /** version → (fieldName → FieldDefinition) */
+    // Key format: "<version>:<source>" (e.g. "v2:A", "v2:B") -> fieldName -> FieldDefinition
     private final Map<String, Map<String, FieldDefinition>> schemaRegistry = new HashMap<>();
 
     private final ObjectMapper mapper = new ObjectMapper();
@@ -63,15 +52,9 @@ public class SchemaConsumerExample {
     // STEP 1: Load schema registry from the schema topic
     // ═════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Reads all messages from the schema topic (from earliest) and populates
-     * the {@link #schemaRegistry}.
-     *
-     * <p>With log compaction, each version key has exactly one message.
-     * Reading from {@code earliest} yields exactly one authoritative schema per version.
-     *
-     * <p>Call once at startup before consuming data events.
-     */
+    // Reads all messages from the schema topic (from earliest) and populates schemaRegistry.
+    // With log compaction, each "version:source" key has exactly one message.
+    // Call once at startup before consuming data events.
     public void loadSchemasFromKafka() {
         Properties props = new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,        BOOTSTRAP_SERVERS);
@@ -91,7 +74,6 @@ public class SchemaConsumerExample {
             // Snapshot end offsets to know when we've read everything currently in topic
             Map<TopicPartition, Long> endOffsets = consumer.endOffsets(partitions);
 
-            // If topic is empty, skip immediately
             boolean emptyTopic = endOffsets.values().stream().allMatch(o -> o == 0L);
             if (emptyTopic) {
                 System.err.println("[WARN] Schema topic is empty. Run SchemaPublisher first.");
@@ -102,7 +84,7 @@ public class SchemaConsumerExample {
             while (!allConsumed) {
                 ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(2));
                 for (ConsumerRecord<String, String> record : records) {
-                    // key = version string (e.g. "v1")
+                    // key = "version:source" (e.g. "v2:A")
                     parseAndRegisterSchema(record.key(), record.value());
                 }
                 allConsumed = partitions.stream().allMatch(tp ->
@@ -110,44 +92,36 @@ public class SchemaConsumerExample {
             }
         }
 
-        System.out.println("Schema registry loaded. Known versions: " + schemaRegistry.keySet());
+        System.out.println("Schema registry loaded. Known schemas: " + schemaRegistry.keySet());
     }
 
-    /**
-     * Parses one schema Kafka message and registers it in the local registry.
-     *
-     * <p>Expected JSON body:
-     * <pre>{@code
-     * {
-     *   "version": "v1",
-     *   "total_fields": 200,
-     *   "fields": {
-     *     "static_categorical":  [ { "name": "customer_segment", "type": "STRING",
-     *                               "constraint_kind": "ENUM",
-     *                               "enum_values": ["PREMIUM", ...] } ],
-     *     "dynamic_categorical": [ ... ],
-     *     "static_numeric":      [ { "name": "age", "type": "INT",
-     *                               "constraint_kind": "RANGE",
-     *                               "min_value": 18, "max_value": 100 } ],
-     *     "dynamic_numeric":     [ ... ]
-     *   }
-     * }
-     * }</pre>
-     */
+    // Parses one schema Kafka message and registers it in the local registry.
+    // Expected JSON body:
+    //   { "version": "v2", "source": "A", "total_fields": 30,
+    //     "fields": {
+    //       "static_categorical":  [ { "name": "...", "type": "STRING", "constraint_kind": "ENUM",
+    //                                  "enum_values": [...] } ],
+    //       "dynamic_categorical": [ ... ],
+    //       "static_numeric":      [ { "name": "...", "type": "INT", "constraint_kind": "RANGE",
+    //                                  "min_value": 18, "max_value": 100 } ],
+    //       "dynamic_numeric":     [ ... ]
+    //     }
+    //   }
     private void parseAndRegisterSchema(String key, String jsonBody) {
         try {
-            JsonNode root  = mapper.readTree(jsonBody);
-            JsonNode vNode = root.get("version");
-            JsonNode fNode = root.get("fields");
+            JsonNode root    = mapper.readTree(jsonBody);
+            JsonNode vNode   = root.get("version");
+            JsonNode srcNode = root.get("source");
+            JsonNode fNode   = root.get("fields");
 
-            if (vNode == null || fNode == null || !fNode.isObject()) {
+            if (vNode == null || srcNode == null || fNode == null || !fNode.isObject()) {
                 System.err.println("[WARN] Skipping schema message (key=" + key
-                        + "): missing 'version' or 'fields' object. "
+                        + "): missing 'version', 'source', or 'fields' object. "
                         + "May be old-format message — re-publish via SchemaPublisher.");
                 return;
             }
 
-            String version = vNode.asText();
+            String registryKey = vNode.asText() + ":" + srcNode.asText();  // e.g. "v2:A"
             TypeReference<List<FieldDefinition>> fdListType = new TypeReference<>() {};
             Map<String, FieldDefinition> fieldMap = new LinkedHashMap<>();
 
@@ -167,8 +141,8 @@ public class SchemaConsumerExample {
                 defs.forEach(fd -> fieldMap.put(fd.getName(), fd));
             }
 
-            schemaRegistry.put(version, fieldMap);
-            System.out.println("  Registered schema version [" + version + "] with "
+            schemaRegistry.put(registryKey, fieldMap);
+            System.out.println("  Registered schema [" + registryKey + "] with "
                     + fieldMap.size() + " fields.");
 
         } catch (Exception e) {
@@ -178,36 +152,25 @@ public class SchemaConsumerExample {
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // STEP 2: Validate a data event against its schema version
+    // STEP 2: Validate a data event against its schema
     // ═════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Validates a parsed data event against the schema for the given version.
-     *
-     * <p>Usage in a Kafka consumer loop:
-     * <pre>{@code
-     * String version = new String(
-     *     record.headers().lastHeader("schema-version").value(), StandardCharsets.UTF_8);
-     * Map<String, Object> event = objectMapper.readValue(record.value(),
-     *     new TypeReference<Map<String, Object>>() {});
-     * List<String> errors = validator.validate(event, version);
-     * }</pre>
-     *
-     * @param event   parsed event payload (field name → value)
-     * @param version schema version read from the Kafka {@code schema-version} header
-     * @return list of validation error messages; empty means valid
-     */
-    public List<String> validate(Map<String, Object> event, String version) {
+    // Validates a parsed data event against the schema for the given version and source.
+    // version - from Kafka header "version" (e.g. "v2")
+    // source  - from Kafka header "source" (e.g. "A" or "B")
+    // Returns list of validation error messages; empty means valid.
+    public List<String> validate(Map<String, Object> event, String version, String source) {
         List<String> errors = new ArrayList<>();
 
         checkRequired(event, "id",             errors);
         checkRequired(event, "timestamp",      errors);
         checkRequired(event, "schema_version", errors);
+        checkRequired(event, "source",         errors);
 
-        Map<String, FieldDefinition> schema = schemaRegistry.get(version);
+        String registryKey = version + ":" + source;
+        Map<String, FieldDefinition> schema = schemaRegistry.get(registryKey);
         if (schema == null) {
-            errors.add("Unknown schema version: '" + version
-                    + "'. Known: " + schemaRegistry.keySet());
+            errors.add("Unknown schema [" + registryKey + "]. Known: " + schemaRegistry.keySet());
             return errors;
         }
 
@@ -291,19 +254,18 @@ public class SchemaConsumerExample {
 
         Properties props = new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,        BOOTSTRAP_SERVERS);
-        // Unique group ID mỗi lần chạy → luôn bắt đầu từ earliest
-        // (không inherit committed offsets từ lần chạy trước)
+        // Unique group ID each run → always starts from earliest
         props.put(ConsumerConfig.GROUP_ID_CONFIG,                 "schema-validator-" + System.currentTimeMillis());
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG,   StringDeserializer.class.getName());
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG,        "earliest"); // đọc lại toàn bộ lịch sử
-        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG,       "false");    // demo → không commit
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG,        "earliest");
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG,       "false");
 
         ObjectMapper objectMapper = new ObjectMapper();
         TypeReference<Map<String, Object>> mapType = new TypeReference<>() {};
 
-        long totalEvents  = 0;
-        long validEvents  = 0;
+        long totalEvents   = 0;
+        long validEvents   = 0;
         long invalidEvents = 0;
 
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
@@ -315,10 +277,12 @@ public class SchemaConsumerExample {
                 for (ConsumerRecord<String, String> record : records) {
                     totalEvents++;
 
-                    // a. Read schema-version from Kafka header
-                    String version = extractSchemaVersion(record);
-                    if (version == null) {
-                        System.err.printf("[Event #%d] Missing 'schema-version' header — skipped%n",
+                    // a. Read "version" and "source" from Kafka headers
+                    String version = extractHeader(record, "version");
+                    String source  = extractHeader(record, "source");
+
+                    if (version == null || source == null) {
+                        System.err.printf("[Event #%d] Missing 'version' or 'source' header — skipped%n",
                                 totalEvents);
                         continue;
                     }
@@ -334,17 +298,17 @@ public class SchemaConsumerExample {
                     }
 
                     // c. Validate against loaded schema
-                    List<String> errors = validator.validate(event, version);
+                    List<String> errors = validator.validate(event, version, source);
 
                     // d. Print result
                     if (errors.isEmpty()) {
                         validEvents++;
-                        System.out.printf("[Event #%d] id=%-12s version=%-4s → ✓ VALID%n",
-                                totalEvents, event.get("id"), version);
+                        System.out.printf("[Event #%d] id=%-12s version=%-4s source=%s → ✓ VALID%n",
+                                totalEvents, event.get("id"), version, source);
                     } else {
                         invalidEvents++;
-                        System.out.printf("[Event #%d] id=%-12s version=%-4s → ✗ INVALID (%d errors)%n",
-                                totalEvents, event.get("id"), version, errors.size());
+                        System.out.printf("[Event #%d] id=%-12s version=%-4s source=%s → ✗ INVALID (%d errors)%n",
+                                totalEvents, event.get("id"), version, source, errors.size());
                         errors.forEach(err -> System.out.println("          " + err));
                     }
 
@@ -358,10 +322,9 @@ public class SchemaConsumerExample {
         }
     }
 
-    // ── Helper: extract schema-version header ──────────────────────────────────
-
-    private static String extractSchemaVersion(ConsumerRecord<String, String> record) {
-        Header header = record.headers().lastHeader("schema-version");
+    // Extracts a single header value as a UTF-8 string. Returns null if header is absent.
+    private static String extractHeader(ConsumerRecord<String, String> record, String headerKey) {
+        Header header = record.headers().lastHeader(headerKey);
         if (header == null) return null;
         return new String(header.value(), StandardCharsets.UTF_8);
     }

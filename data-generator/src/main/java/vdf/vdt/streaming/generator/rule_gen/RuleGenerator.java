@@ -19,9 +19,15 @@ import java.util.*;
 //   count threshold     = expectedEventsPerId * U[0.2, 3.0]
 //   sum threshold       = expectedEventsPerId * meanValue * U[0.2, 3.0]
 //   min/max/avg         = random value within [field.minValue, field.maxValue]
+//
+// Window expression format: <field>_<winType>_<agg>_<windowTime>_<subIntervalTime>
+//   tumbling: bucket time must evenly divide window time (windowMinutes % bucketMinutes == 0)
+//   sliding:  slide time must be strictly less than window time
+//   Both sub-interval times are in whole minutes and always < window time.
 public class RuleGenerator {
 
-    private final String[] timeWindows  = {"5s", "10s", "30s", "1m", "5m", "10m", "1h"};
+    // Window sizes in minutes (2m–30m). Sub-interval (bucket/slide) is derived per window.
+    private static final int[] WINDOW_MINUTES = {2, 5, 10, 15, 20, 25, 30};
     private final String[] windowAggs   = {"sum", "count", "avg", "max", "min"};
     // tumbling = fixed non-overlapping intervals, sliding = overlapping (step < window size)
     private final String[] windowTypes  = {"tumbling", "sliding"};
@@ -127,23 +133,30 @@ public class RuleGenerator {
     }
 
     // Type 2: window aggregation expression using dynamic numeric fields only.
-    // Expression name format: <field>_<windowType>_<agg>_<time>
-    // Window types: tumbling (fixed non-overlapping) or sliding (overlapping).
+    // Expression name format: <field>_<windowType>_<agg>_<windowTime>_<subIntervalTime>
+    //   windowTime    = window duration in minutes (2m–30m)
+    //   subIntervalTime = bucket (tumbling) or slide step (sliding), in whole minutes, < windowTime
+    //   tumbling constraint: windowMinutes % bucketMinutes == 0
     // Threshold is derived from expected event count in the window per customer ID.
     // Examples:
-    //   daily_spend_total_vnd_tumbling_sum_1h >= 50000000.00
-    //   fraud_probability_score_sliding_count_5m > 3.00
+    //   daily_spend_total_vnd_tumbling_sum_10m_2m >= 50000000.00
+    //   fraud_probability_score_sliding_count_5m_1m > 3.00
     private String buildWindowAggExpr() {
         FieldDefinition fd = Constants.DYNAMIC_NUMERIC_FIELDS
                 .get(random.nextInt(Constants.DYNAMIC_NUMERIC_FIELDS.size()));
 
-        String agg      = windowAggs[random.nextInt(windowAggs.length)];
-        String time     = timeWindows[random.nextInt(timeWindows.length)];
-        String winType  = windowTypes[random.nextInt(windowTypes.length)];
-        String[] ops = {"<=", ">=", "<", ">"};
-        String op   = ops[random.nextInt(ops.length)];
+        String agg     = windowAggs[random.nextInt(windowAggs.length)];
+        String winType = windowTypes[random.nextInt(windowTypes.length)];
+        String[] ops   = {"<=", ">=", "<", ">"};
+        String op      = ops[random.nextInt(ops.length)];
 
-        double windowSeconds       = parseWindowToSeconds(time);
+        int windowMin      = WINDOW_MINUTES[random.nextInt(WINDOW_MINUTES.length)];
+        int subIntervalMin = pickSubInterval(winType, windowMin);
+
+        String windowLabel      = windowMin + "m";
+        String subIntervalLabel = subIntervalMin + "m";
+
+        double windowSeconds       = windowMin * 60.0;
         double expectedEventsPerId = Math.max(0.1, (double) reqPerSecond * windowSeconds / idRange);
         double meanValue           = (fd.getMinValue() + fd.getMaxValue()) / 2.0;
 
@@ -153,8 +166,25 @@ public class RuleGenerator {
             default      -> randomInRange(fd); // min, max, avg -> value within field range
         };
 
-        String fieldExpr = fd.getName() + "_" + winType + "_" + agg + "_" + time;
+        String fieldExpr = fd.getName() + "_" + winType + "_" + agg + "_" + windowLabel + "_" + subIntervalLabel;
         return fieldExpr + " " + op + " " + String.format(Locale.US, "%.2f", threshold);
+    }
+
+    // Picks a valid sub-interval (bucket for tumbling, slide step for sliding) in whole minutes.
+    // For tumbling: candidate minutes must evenly divide windowMin; picks one at random.
+    // For sliding:  any minute value in [1, windowMin - 1]; picks one at random.
+    private int pickSubInterval(String winType, int windowMin) {
+        if ("tumbling".equals(winType)) {
+            // Collect all divisors of windowMin that are strictly less than windowMin.
+            List<Integer> divisors = new ArrayList<>();
+            for (int m = 1; m < windowMin; m++) {
+                if (windowMin % m == 0) divisors.add(m);
+            }
+            return divisors.get(random.nextInt(divisors.size()));
+        } else {
+            // Sliding: any whole-minute step strictly less than window size.
+            return 1 + random.nextInt(windowMin - 1); // [1, windowMin - 1]
+        }
     }
 
     // Type 3: linear combination of two numeric fields (dynamic or static).
@@ -196,6 +226,6 @@ public class RuleGenerator {
         if (time.endsWith("s")) return Double.parseDouble(time.replace("s", ""));
         if (time.endsWith("m")) return Double.parseDouble(time.replace("m", "")) * 60;
         if (time.endsWith("h")) return Double.parseDouble(time.replace("h", "")) * 3600;
-        return 10.0;
+        return 60.0; // default: 1 minute
     }
 }

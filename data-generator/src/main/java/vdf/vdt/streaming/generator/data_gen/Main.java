@@ -7,8 +7,15 @@ import java.util.Properties;
 
 public class Main {
     public static void main(String[] args) {
-        int reqPerSecond = 10;
-        int idRange = 100;
+        // Throughput and ID pool
+        int    reqPerSecond     = 10;
+        int    idRange          = 100;
+
+        // Skew configuration:
+        //   skewIdCount IDs (1..k) each receive skewPctPerSkewId% of traffic.
+        //   Constraint: skewIdCount * skewPctPerSkewId <= 80.
+        int    skewIdCount      = 2;
+        double skewPctPerSkewId = 30.0;  // 5 * 10.0 = 50% total skew traffic
 
         Properties props = new Properties();
         try (InputStream input = Main.class.getClassLoader().getResourceAsStream("application.properties")) {
@@ -18,24 +25,26 @@ public class Main {
         }
 
         String bootstrapServers = props.getProperty("kafka.bootstrap-servers", "localhost:9092");
-        String kafkaTopic       = props.getProperty("kafka.topic",             "stream-input-events");
-        String schemaTopic      = props.getProperty("kafka.schema-topic",      "stream-schema-registry");
-        String version          = props.getProperty("schema.version",          "v1");
+        String rawEventTopic    = props.getProperty("kafka.topic.raw-event",   "source.event");
+        String schemaTopic      = props.getProperty("kafka.topic.schema",      "source.schema");
+        String version          = props.getProperty("schema.version",          "v2");
 
         KafkaProducerClient kafkaClient = new KafkaProducerClient(bootstrapServers);
 
-        // ── 1. Publish schema definition on startup ───────────────────────────
+        // ── 1. Publish both schema definitions on startup ─────────────────────
         SchemaPublisher schemaPublisher = new SchemaPublisher(kafkaClient);
         try {
-            schemaPublisher.publishSchema(schemaTopic, version);
+            schemaPublisher.publishSchemas(schemaTopic, version);
         } catch (Exception e) {
-            System.err.println("Failed to publish schema: " + e.getMessage());
+            System.err.println("Failed to publish schemas: " + e.getMessage());
             e.printStackTrace();
         }
 
-        // ── 2. Start continuous data event generation ─────────────────────────
-        DataGenerator dataService = new DataGenerator(kafkaClient);
-        System.out.println(">>> Starting Data Generator | topic: " + kafkaTopic + " | schema-version: " + version);
-        dataService.startGenerating(reqPerSecond, idRange, kafkaTopic, version);
+        // ── 2. Start continuous dual-schema event generation ──────────────────
+        DataGenerator dataGenerator = new DataGenerator(kafkaClient);
+        System.out.println(">>> Starting Data Generator | topic: " + rawEventTopic
+                + " | schema-version: " + version);
+        dataGenerator.startGenerating(reqPerSecond, idRange, skewIdCount, skewPctPerSkewId,
+                rawEventTopic, version);
     }
 }

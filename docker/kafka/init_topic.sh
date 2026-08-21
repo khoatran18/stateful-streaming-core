@@ -33,19 +33,19 @@ echo "Creating Kafka topics..."
 # 2. Init topic for business logic
 /opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
   --bootstrap-server $BOOTSTRAP_SERVER \
-  --topic cdp.public.config_rules \
+  --topic source.rule \
   --partitions 3 \
   --replication-factor 1
 
 /opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
   --bootstrap-server $BOOTSTRAP_SERVER \
-  --topic input.events \
+  --topic source.event \
   --partitions 3 \
   --replication-factor 1
 
 /opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
   --bootstrap-server $BOOTSTRAP_SERVER \
-  --topic stream-schema-registry \
+  --topic source.schema \
   --partitions 1 \
   --replication-factor 1 \
   --config cleanup.policy=compact \
