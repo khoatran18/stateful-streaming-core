@@ -24,6 +24,12 @@ import java.util.*;
 //   tumbling: bucket time must evenly divide window time (windowMinutes % bucketMinutes == 0)
 //   sliding:  slide time must be strictly less than window time
 //   Both sub-interval times are in whole minutes and always < window time.
+//
+// Field naming rules:
+//   static fields (categorical + numeric) → always referenced with "_current" suffix
+//   dynamic numeric fields                → no suffix; referenced by raw field name
+//   dynamic categorical fields            → MUST be paired with a window agg in an AND node;
+//                                          never appear as a standalone CONDITION leaf
 public class RuleGenerator {
 
     // Window sizes in minutes (2m–30m). Sub-interval (bucket/slide) is derived per window.
@@ -59,18 +65,25 @@ public class RuleGenerator {
     }
 
     // Recursively builds one AST node. Depth is randomised between 2 and 5 total levels.
-    // At max depth (or randomly earlier) produces a CONDITION leaf, otherwise AND/OR gate.
+    // At leaf positions (~20% chance) a dynamic-categorical+window AND pair is injected instead
+    // of a simple CONDITION, ensuring dynCat expressions are never standalone.
     private Map<String, Object> generateNode(int currentDepth, int maxDepth) {
-        Map<String, Object> node = new LinkedHashMap<>();
         if (currentDepth >= maxDepth || random.nextBoolean()) {
+            // ~20% of leaf positions: dynCat paired with window agg in an AND node.
+            // This keeps dynamic categorical expressions meaningful (filter + aggregation).
+            if (random.nextInt(5) == 0) {
+                return buildDynCatPairNode();
+            }
+            Map<String, Object> node = new LinkedHashMap<>();
             node.put("type",       "CONDITION");
             node.put("expression", generateExpression());
-        } else {
-            node.put("type", random.nextBoolean() ? "AND" : "OR");
-            node.put("children", List.of(
-                    generateNode(currentDepth + 1, maxDepth),
-                    generateNode(currentDepth + 1, maxDepth)));
+            return node;
         }
+        Map<String, Object> node = new LinkedHashMap<>();
+        node.put("type", random.nextBoolean() ? "AND" : "OR");
+        node.put("children", List.of(
+                generateNode(currentDepth + 1, maxDepth),
+                generateNode(currentDepth + 1, maxDepth)));
         return node;
     }
 
@@ -84,25 +97,20 @@ public class RuleGenerator {
         };
     }
 
-    // Type 0: categorical expression using ENUM fields.
-    // Static fields are referenced as <field>_current (looks up latest stored state).
+    // Type 0: static categorical expression.
+    // Always uses static categorical fields — these are fixed per customer and need no pairing.
+    // Referenced with "_current" suffix (looks up latest stored state).
     // Operators: == or !=. Value picked from the field's actual enum_values.
+    // Dynamic categorical is excluded here; see buildDynCatPairNode for its handling.
     // Examples:
     //   loyalty_tier_current == 'GOLD'
-    //   churn_risk_flag != 'CHURNED'
+    //   risk_rating_current != 'VERY_HIGH'
     private String buildCategoricalExpr() {
-        boolean useStatic = random.nextBoolean();
-        List<FieldDefinition> pool = useStatic
-                ? Constants.STATIC_CATEGORICAL_FIELDS
-                : Constants.DYNAMIC_CATEGORICAL_FIELDS;
-
-        FieldDefinition fd  = pool.get(random.nextInt(pool.size()));
-        String col          = useStatic ? fd.getName() + "_current" : fd.getName();
-        String op           = random.nextBoolean() ? "==" : "!=";
-        List<String> enums  = fd.getEnumValues();
-        String val          = enums.get(random.nextInt(enums.size()));
-
-        return col + " " + op + " '" + val + "'";
+        FieldDefinition fd = Constants.STATIC_CATEGORICAL_FIELDS
+                .get(random.nextInt(Constants.STATIC_CATEGORICAL_FIELDS.size()));
+        String op  = random.nextBoolean() ? "==" : "!=";
+        String val = fd.getEnumValues().get(random.nextInt(fd.getEnumValues().size()));
+        return fd.getName() + "_current" + " " + op + " '" + val + "'";
     }
 
     // Type 1: raw numeric expression using RANGE fields.
@@ -185,6 +193,35 @@ public class RuleGenerator {
             // Sliding: any whole-minute step strictly less than window size.
             return 1 + random.nextInt(windowMin - 1); // [1, windowMin - 1]
         }
+    }
+
+    // Builds an AND node pairing a dynamic categorical filter with a window aggregation.
+    // Dynamic categorical fields (e.g. transaction_type, card_status) represent event-level
+    // attributes that only make sense as a filter scoping a computation, not as a standalone
+    // condition. The AND structure is: (dynCat == value) AND (windowAgg op threshold).
+    // This mirrors real-world rules like "count transfers in 10m with transaction_type == TRANSFER".
+    // Operators for dynCat: == or != only (categorical matching, no ordering).
+    private Map<String, Object> buildDynCatPairNode() {
+        // Dynamic categorical CONDITION child.
+        FieldDefinition fd  = Constants.DYNAMIC_CATEGORICAL_FIELDS
+                .get(random.nextInt(Constants.DYNAMIC_CATEGORICAL_FIELDS.size()));
+        String op  = random.nextBoolean() ? "==" : "!=";
+        String val = fd.getEnumValues().get(random.nextInt(fd.getEnumValues().size()));
+        String dynCatExpr = fd.getName() + " " + op + " '" + val + "'";
+
+        Map<String, Object> dynCatNode = new LinkedHashMap<>();
+        dynCatNode.put("type",       "CONDITION");
+        dynCatNode.put("expression", dynCatExpr);
+
+        // Window aggregation CONDITION child — the meaningful computation over filtered events.
+        Map<String, Object> windowNode = new LinkedHashMap<>();
+        windowNode.put("type",       "CONDITION");
+        windowNode.put("expression", buildWindowAggExpr());
+
+        Map<String, Object> andNode = new LinkedHashMap<>();
+        andNode.put("type",     "AND");
+        andNode.put("children", List.of(dynCatNode, windowNode));
+        return andNode;
     }
 
     // Type 3: linear combination of two numeric fields (dynamic or static).

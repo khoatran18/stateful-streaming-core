@@ -109,7 +109,6 @@ Otherwise → uniform random from [skewIdCount+1, idRange]
 
 Rules are condition trees (AND/OR gates + CONDITION leaves), depth 2–5, targeting the **200-field legacy schema** in `Constants`. Rule IDs: `rule_200_<i>`.
 
-See [README rule section details](README.md) for expression types and window naming format.
 
 ### Window Aggregation Expression Format
 
@@ -128,6 +127,42 @@ daily_spend_total_vnd_tumbling_sum_10m_2m  >= 50000000.00
 fraud_probability_score_sliding_count_5m_1m > 3.00
 transfer_amount_today_vnd_tumbling_avg_30m_5m < 75000000.00
 ```
+
+### Expression Types
+
+| # | Builder | Field pool | Operators | Notes |
+|---|---|---|---|---|
+| 0 | `buildCategoricalExpr` | static categorical | `==`, `!=` | Always `_current` suffix |
+| 1 | `buildRawNumericExpr` | static + dynamic numeric | static: all 6 ops; dynamic: inequalities only | Static gets `_current` suffix |
+| 2 | `buildWindowAggExpr` | dynamic numeric | `<=`, `>=`, `<`, `>` | Threshold derived from expected event count |
+| 3 | `buildLinearCombinationExpr` | static + dynamic numeric | `<=`, `>=`, `<`, `>` | `(f1 * 0.7 + f2 * 0.3) op threshold` |
+
+### Dynamic Categorical Rule
+
+Dynamic categorical fields (`transaction_type`, `card_status`, etc.) are event-level enum attributes
+that carry no meaning on their own as a standalone condition. They are always emitted as an
+**AND node** pairing a categorical filter with a window aggregation:
+
+```json
+{
+  "type": "AND",
+  "children": [
+    { "type": "CONDITION", "expression": "transaction_type == 'TRANSFER'" },
+    { "type": "CONDITION", "expression": "transfer_amount_today_vnd_sliding_sum_10m_2m >= 50000000.00" }
+  ]
+}
+```
+
+~20% of leaf positions in the tree are replaced with this AND pair (`buildDynCatPairNode`).
+
+### Field Naming Rules
+
+| Field category | Expression reference | Operators |
+|---|---|---|
+| static categorical | `<field>_current` | `==`, `!=` |
+| static numeric | `<field>_current` | `==`, `!=`, `<=`, `>=`, `<`, `>` |
+| dynamic numeric | `<field>` (raw name) | `<=`, `>=`, `<`, `>` |
+| dynamic categorical | `<field>` — only inside AND pair | `==`, `!=` |
 
 ## Config
 
