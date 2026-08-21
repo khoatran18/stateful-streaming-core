@@ -125,19 +125,37 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  mongodb:
+  mongo1:
     image: mongo:latest
-    container_name: mongodb
+    container_name: mongo1
     restart: always
+    command: ["--replSet", "rs0", "--bind_ip_all"]
     networks:
       - test-net
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: adminpass
+#    environment:
+#      MONGO_INITDB_ROOT_USERNAME: admin
+#      MONGO_INITDB_ROOT_PASSWORD: adminpass
     ports:
       - "27017:27017"
     volumes:
-      - mongodb_data:/data/db
+      - mongo1_data:/data/db
+
+  mongo-init:
+    image: mongo:latest
+    container_name: mongo-init
+    depends_on:
+      - mongo1
+    networks:
+      - test-net
+    command: >
+      bash -c "sleep 5 && mongosh --host mongo1:27017 --eval '
+        rs.initiate({
+          _id: \"rs0\",
+          members: [
+            {_id: 0, host: \"mongo1:27017\"},
+          ]
+        })
+      '"
 
   mongo-express:
     image: mongo-express
@@ -146,28 +164,62 @@ services:
     networks:
       - test-net
     depends_on:
-      - mongodb
+      - mongo1
     environment:
-      ME_CONFIG_MONGODB_ADMINUSERNAME: admin
-      ME_CONFIG_MONGODB_ADMINPASSWORD: adminpass
-      ME_CONFIG_MONGODB_SERVER: mongodb
+      ME_CONFIG_mongo1_ADMINUSERNAME: admin
+      ME_CONFIG_mongo1_ADMINPASSWORD: adminpass
+      ME_CONFIG_mongo1_SERVER: mongo1
     ports:
       - "8081:8081"
 
   connect_debezium_kafka:
-    image: quay.io/debezium/connect:latest
+    image: quay.io/debezium/connect:2.7
     container_name: connect_debezium_kafka
     ports:
       - "8083:8083"
+    networks:
+      - test-net
     depends_on:
       - broker1
       - postgres
     environment:
-      - BOOTSTRAP_SERVERS=kafka:9092
+      - BOOTSTRAP_SERVERS=broker1:29092
       - GROUP_ID=1
       - CONFIG_STORAGE_TOPIC=my_connect_configs
       - OFFSET_STORAGE_TOPIC=my_connect_offsets
       - STATUS_STORAGE_TOPIC=my_connect_statuses
+
+  debezium-init:
+    image: curlimages/curl:latest
+    container_name: debezium-init
+    networks:
+      - test-net
+    depends_on:
+      - connect_debezium_kafka
+      - mongo-init
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "Waiting for Kafka Connect to start..."
+        while [ $$(curl -s -o /dev/null -w "%{http_code}" http://connect_debezium_kafka:8083/connectors) -ne 200 ]; do
+          sleep 3
+        done
+        echo "Kafka Connect is ready! Registering MongoDB Connector..."
+        curl -s -i -X POST -H "Accept:application/json" -H "Content-Type:application/json" \
+          http://connect_debezium_kafka:8083/connectors/ \
+          -d '{
+            "name": "mongodb-cdc-connector",
+            "config": {
+              "connector.class": "io.debezium.connector.mongodb.MongoDbConnector",
+              "mongodb.connection.string": "mongodb://mongo1:27017/?replicaSet=rs0",
+              "topic.prefix": "mongo_cdc",
+              "database.include.list": "inventory,ecommerce,crm_db",
+              "capture.mode": "change_streams_update_full"
+            }
+          }'
+        echo ""
+        echo "Connector initialization completed!"
 
 networks:
   test-net:
@@ -175,6 +227,8 @@ networks:
 
 volumes:
   postgres_data:
-  mongodb_data:
+    name: postgres_data
+  mongo1_data:
+    name: mongo1_data
 
 # docker compose -f docker_compose.yml up -d --build
