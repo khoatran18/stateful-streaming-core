@@ -94,23 +94,25 @@ public class RuleModel {
         public void setValue(Object value) { this.value = value; }
     }
 
-    // Timestamp (ISO-8601) and author of this generated rule.
+    // Event time (ISO-8601) and author of this generated rule.
     public static class RuleMetadata {
         // ISO-8601 timestamp when this rule was generated (e.g. "2026-08-24T09:55:05+07:00").
-        @JsonProperty("timestamp")
-        private String timestamp;
+        @JsonProperty("event_time")
+        private String eventTime;
 
         // Simulated author ID, randomly drawn from "user_001" to "user_<maxUserId>".
         @JsonProperty("user_id")
         private String userId;
 
-        public RuleMetadata(String timestamp, String userId) {
-            this.timestamp = timestamp;
+        public RuleMetadata() {}
+
+        public RuleMetadata(String eventTime, String userId) {
+            this.eventTime = eventTime;
             this.userId    = userId;
         }
 
-        public String getTimestamp() { return timestamp; }
-        public void setTimestamp(String timestamp) { this.timestamp = timestamp; }
+        public String getEventTime() { return eventTime; }
+        public void setEventTime(String eventTime) { this.eventTime = eventTime; }
 
         public String getUserId() { return userId; }
         public void setUserId(String userId) { this.userId = userId; }

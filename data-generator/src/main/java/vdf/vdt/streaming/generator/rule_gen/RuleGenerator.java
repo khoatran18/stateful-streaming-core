@@ -173,12 +173,12 @@ public class RuleGenerator {
     }
 
     // Builds the metadata block for one rule.
-    // timestamp - ISO-8601 current time; user_id - random "user_001".."user_<maxUserId>".
+    // event_time - ISO-8601 current time; user_id - random "user_001".."user_<maxUserId>".
     private Map<String, Object> buildRuleMetadata(int maxUserId) {
         int userId = 1 + random.nextInt(Math.max(1, maxUserId));
         Map<String, Object> meta = new LinkedHashMap<>();
-        meta.put("timestamp", OffsetDateTime.now().format(TIMESTAMP_FMT));
-        meta.put("user_id",   String.format("user_%03d", userId));
+        meta.put("event_time", OffsetDateTime.now().format(TIMESTAMP_FMT));
+        meta.put("user_id",    String.format("user_%03d", userId));
         return meta;
     }
 
@@ -450,24 +450,42 @@ public class RuleGenerator {
         return andNode;
     }
 
-    // Type 3: linear combination of two DYNAMIC numeric fields from the same source.
-    // field formula uses fieldPath — either flat or nested depending on the field.
-    //
-    // Raw example:
-    //   (A.v2.daily_spend_total_vnd * 0.7 + A.v2.debt.transfer_amount_today_vnd * 0.3) >= 50000000.00
-    // Windowed example:
-    //   { field: "(A.v2.daily_spend_total_vnd * 0.7 + A.v2.debt.transfer_amount_today_vnd * 0.3)",
-    //     agg: "sum", window: { type: "tumbling", time: "10m" }, op: ">=", threshold: ... }
+    // Type 4: linear combination of two DYNAMIC numeric fields from the same source sharing the SAME range.
+    // Random weights w1 and w2 such that w1 + w2 = 1.0 (e.g. 0.65 and 0.35).
+    // Example formula:
+    //   (A.v2.daily_spend_total_vnd * 0.65 + A.v2.debt.transfer_amount_today_vnd * 0.35) >= 50000000.00
     private Object buildLinearCombinationExpr(String src) {
         List<FieldDefinition> pool = dynNumPool(src);
-        FieldDefinition fd1 = pool.get(random.nextInt(pool.size()));
-        FieldDefinition fd2 = pool.get(random.nextInt(pool.size()));
+        List<FieldDefinition> shuffledPool = new ArrayList<>(pool);
+        Collections.shuffle(shuffledPool, random);
+
+        FieldDefinition fd1 = shuffledPool.get(0);
+        FieldDefinition fd2 = shuffledPool.get(0);
+
+        for (FieldDefinition candidate : shuffledPool) {
+            List<FieldDefinition> matches = pool.stream()
+                    .filter(fd -> fd.getMinValue().equals(candidate.getMinValue())
+                               && fd.getMaxValue().equals(candidate.getMaxValue()))
+                    .toList();
+            if (matches.size() >= 2) {
+                fd1 = candidate;
+                List<FieldDefinition> otherMatches = matches.stream()
+                        .filter(fd -> !fd.getName().equals(candidate.getName()))
+                        .toList();
+                fd2 = otherMatches.get(random.nextInt(otherMatches.size()));
+                break;
+            }
+        }
+
+        // Random weights w1 and w2 between 0.05 and 0.95, w1 + w2 = 1.0
+        double w1 = (5 + random.nextInt(91)) / 100.0;
+        double w2 = Math.round((1.0 - w1) * 100.0) / 100.0;
+
+        String fieldFormula = String.format(Locale.US, "(%s * %.2f + %s * %.2f)",
+                fieldPath(src, fd1), w1, fieldPath(src, fd2), w2);
 
         String[] ops = {"<=", ">=", "<", ">"};
         String op = ops[random.nextInt(ops.length)];
-
-        // Use fieldPath so nested fields get the correct nested path.
-        String fieldFormula = "(" + fieldPath(src, fd1) + " * 0.7 + " + fieldPath(src, fd2) + " * 0.3)";
 
         // Windowed variant: wrap the formula as the field in a window agg object.
         if (random.nextBoolean()) {
@@ -477,17 +495,12 @@ public class RuleGenerator {
 
             double windowSeconds       = windowMin * 60.0;
             double expectedEventsPerId = Math.max(0.1, (double) reqPerSecond * windowSeconds / idRange);
-            double meanValue           = (fd1.getMinValue() + fd1.getMaxValue()) / 2.0
-                                       + (fd2.getMinValue() + fd2.getMaxValue()) / 2.0;
+            double meanValue           = (fd1.getMinValue() + fd1.getMaxValue()) / 2.0;
 
             double threshold = switch (agg) {
                 case "count" -> expectedEventsPerId * (0.2 + random.nextDouble() * 2.8);
                 case "sum"   -> expectedEventsPerId * meanValue * (0.2 + random.nextDouble() * 2.8);
-                default      -> {
-                    double lo = Math.min(fd1.getMinValue(), fd2.getMinValue());
-                    double hi = Math.max(fd1.getMaxValue(), fd2.getMaxValue());
-                    yield lo + (hi - lo) * random.nextDouble();
-                }
+                default      -> randomInRange(fd1);
             };
 
             Map<String, Object> window = new LinkedHashMap<>();
@@ -504,10 +517,8 @@ public class RuleGenerator {
         }
 
         // Raw variant: plain string expression.
-        double maxOfTwo = Math.max(fd1.getMaxValue(), fd2.getMaxValue());
-        double minOfTwo = Math.min(fd1.getMinValue(), fd2.getMinValue());
-        double threshold = minOfTwo + (maxOfTwo - minOfTwo) * random.nextDouble();
-        return fieldFormula + " " + op + " " + String.format(Locale.US, "%.2f", threshold);
+        double threshold = randomInRange(fd1);
+        return fieldFormula + " " + op + " " + formatThreshold(fd1, threshold);
     }
 
     private double randomInRange(FieldDefinition fd) {

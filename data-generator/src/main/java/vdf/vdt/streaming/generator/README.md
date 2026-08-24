@@ -112,7 +112,7 @@ Rules contain `metadata`, pre-filter `trigger_criteria`, and a `condition_tree` 
 {
   "rule_id": "rule_A_0",
   "schema_fields_count": 34,
-  "metadata": { "timestamp": "2026-08-24T15:08:00+07:00", "user_id": "user_005" },
+  "metadata": { "event_time": "2026-08-24T15:08:00+07:00", "user_id": "user_005" },
   "trigger_criteria": {
     "source": "A",
     "version": "v2",
@@ -143,7 +143,7 @@ Rules contain `metadata`, pre-filter `trigger_criteria`, and a `condition_tree` 
 - **Numeric**: `A.v2.age IN [25, 30, 35]`, `B.v2.risk_signals.fraud_probability_score > 75.0`
 - **Boolean**: `A.v2.is_vip_member == true`, `B.v2.risk_signals.is_suspicious_ip == true`
 - **Window Aggregation**: Structured object (`field`, `agg`, `window` `{ type, time }`, `op`, `threshold`)
-- **Linear Combination**: `(A.v2.daily_spend_total_vnd * 0.7 + A.v2.debt.transfer_amount_today_vnd * 0.3) >= 50000000.00`
+- **Linear Combination**: `(A.v2.daily_spend_total_vnd * 0.65 + A.v2.debt.transfer_amount_today_vnd * 0.35) >= 50000000.00` (dynamic numeric fields with matching ranges, randomized weights $w_1 + w_2 = 1.0$).
 
 ---
 
