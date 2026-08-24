@@ -118,7 +118,7 @@ public class SchemaPublisher {
         metadataStruct.put("customer_id",    Map.of("type", "STRING",    "category", "static_categorical"));
         metadataStruct.put("schema_version", Map.of("type", "STRING",    "category", "static_categorical"));
         metadataStruct.put("source",         Map.of("type", "STRING",    "category", "static_categorical"));
-        metadataStruct.put("event_time",     Map.of("type", "TIMESTAMP", "category", "dynamic_timestamp"));
+        metadataStruct.put("event_time",     Map.of("type", "TIMESTAMP", "category", "dynamic_categorical"));
         structure.put("metadata", metadataStruct);
 
         for (FieldDefinition fd : staticCat)  { structure.put(fd.getName(), fieldSpec(fd)); }

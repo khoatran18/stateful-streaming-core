@@ -560,12 +560,12 @@ public class Constants {
     public static final List<FieldDefinition> SCHEMA_A_STATIC_TIMESTAMP_FIELDS =
             Stream.of(
                 FieldDefinition.ofTimestamp("account_opened_date", 1_262_304_000L, 1_704_067_200L)
-            ).map(fd -> fd.withCategory("static_timestamp")).toList();
+            ).map(fd -> fd.withCategory("static_categorical")).toList();
 
     public static final List<FieldDefinition> SCHEMA_A_DYNAMIC_TIMESTAMP_FIELDS =
             Stream.of(
                 FieldDefinition.ofTimestamp("last_transaction_time", 1_767_225_600L, 1_787_616_000L)
-            ).map(fd -> fd.withCategory("dynamic_timestamp")).toList();
+            ).map(fd -> fd.withCategory("dynamic_categorical")).toList();
 
     // ══════════════════════════════════════════════════════════════════════════
     // SCHEMA B — TIMESTAMP fields
@@ -573,12 +573,12 @@ public class Constants {
     public static final List<FieldDefinition> SCHEMA_B_STATIC_TIMESTAMP_FIELDS =
             Stream.of(
                 FieldDefinition.ofTimestamp("account_created_date", 1_262_304_000L, 1_704_067_200L)
-            ).map(fd -> fd.withCategory("static_timestamp")).toList();
+            ).map(fd -> fd.withCategory("static_categorical")).toList();
 
     public static final List<FieldDefinition> SCHEMA_B_DYNAMIC_TIMESTAMP_FIELDS =
             Stream.of(
                 FieldDefinition.ofTimestamp("last_login_time", 1_767_225_600L, 1_787_616_000L)
-            ).map(fd -> fd.withCategory("dynamic_timestamp")).toList();
+            ).map(fd -> fd.withCategory("dynamic_categorical")).toList();
 
     // ══════════════════════════════════════════════════════════════════════════
     // SCHEMA A — BOOLEAN fields (+2 = 34 total leaf fields)
@@ -586,12 +586,12 @@ public class Constants {
     public static final List<FieldDefinition> SCHEMA_A_STATIC_BOOLEAN_FIELDS =
             Stream.of(
                 FieldDefinition.ofBoolean("is_vip_member")
-            ).map(fd -> fd.withCategory("static_boolean")).toList();
+            ).map(fd -> fd.withCategory("static_categorical")).toList();
 
     public static final List<FieldDefinition> SCHEMA_A_DYNAMIC_BOOLEAN_FIELDS =
             Stream.of(
                 FieldDefinition.ofBoolean("is_international_transaction")
-            ).map(fd -> fd.withCategory("dynamic_boolean")).toList();
+            ).map(fd -> fd.withCategory("dynamic_categorical")).toList();
 
     // ══════════════════════════════════════════════════════════════════════════
     // SCHEMA B — BOOLEAN fields (+2 = 34 total leaf fields)
@@ -599,10 +599,10 @@ public class Constants {
     public static final List<FieldDefinition> SCHEMA_B_STATIC_BOOLEAN_FIELDS =
             Stream.of(
                 FieldDefinition.ofBoolean("is_2fa_enabled")
-            ).map(fd -> fd.withCategory("static_boolean")).toList();
+            ).map(fd -> fd.withCategory("static_categorical")).toList();
 
     public static final List<FieldDefinition> SCHEMA_B_DYNAMIC_BOOLEAN_FIELDS =
             Stream.of(
                 FieldDefinition.ofBoolean("is_suspicious_ip")
-            ).map(fd -> fd.withCategory("dynamic_boolean")).toList();
+            ).map(fd -> fd.withCategory("dynamic_categorical")).toList();
 }
