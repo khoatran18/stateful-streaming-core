@@ -13,6 +13,8 @@ public class Main {
         int totalRules   = 1000;
         // user_id in rule metadata is randomly drawn from "user_001" to "user_<maxUserId>"
         int maxUserId    = 20;
+        // Maximum depth for condition_tree AST (tree depth is randomized between 1 and maxTreeDepth per rule)
+        int maxTreeDepth = 2;
 
         // Base data folder
         Path basePath = Path.of("data/rules").toAbsolutePath();
@@ -32,7 +34,7 @@ public class Main {
                 Files.createDirectories(targetPath.getParent());
             }
 
-            ruleService.generateRulesToFile(totalRules, filePath, maxUserId);
+            ruleService.generateRulesToFile(totalRules, filePath, maxUserId, maxTreeDepth);
             System.out.println(">>> Rule successfully generated at: " + new File(filePath).getAbsolutePath());
         } catch (Exception e) {
             e.printStackTrace();

@@ -19,10 +19,10 @@ generator/
 │   └── Main.java
 ├── model/
 │   ├── FieldDefinition.java       # name, type, category (constraint fields internal-only)
-│   ├── RuleModel.java             # rule_id, schema_fields_count, metadata, condition_tree (AST)
+│   ├── RuleModel.java             # rule_id, schema_fields_count, metadata, trigger_criteria, condition_tree (AST)
 │   └── SchemaDefinition.java      # lightweight wrapper: totalFields + column name lists
 └── rule_gen/
-    ├── RuleGenerator.java         # AST rule generator, 5 expression types (dual 34-field schema)
+    ├── RuleGenerator.java         # AST rule generator (depth 1-2, trigger criteria, dual 34-field schema)
     └── Main.java
 ```
 
@@ -101,39 +101,49 @@ Headers on Kafka messages: `version: v2`, `source: A|B`.
 }
 ```
 
-### Traffic Skew
-- `skewIdCount * skewPctPerSkewId ≤ 80%`.
-- Skew IDs (1..k) take configured traffic share; remaining IDs split traffic uniformly.
-
 ---
 
 ## Rule Generation
 
-Condition trees (AND/OR gates + CONDITION leaves, depth 2–5). Rule targets source A or B randomly.
+Rules contain `metadata`, pre-filter `trigger_criteria`, and a `condition_tree` (depth 1–2).
 
-### Rule Metadata & Paths
-- Metadata: `timestamp` (ISO-8601), `user_id` (`user_001`..`user_<maxUserId>`).
-- Paths: `{src}.v2.{fieldName}` (root) or `{src}.v2.{group}.{fieldName}` (nested).
-  - e.g., `A.v2.customer_segment`, `A.v2.debt.loan_repayment_status`, `B.v2.risk_signals.is_suspicious_ip`.
+### Rule Structure Example
+```json
+{
+  "rule_id": "rule_A_0",
+  "schema_fields_count": 34,
+  "metadata": { "timestamp": "2026-08-24T15:08:00+07:00", "user_id": "user_005" },
+  "trigger_criteria": {
+    "source": "A",
+    "version": "v2",
+    "conditions": [
+      { "field": "customer_segment", "op": "IN", "value": ["PREMIUM", "VIP"] },
+      { "field": "debt.loan_repayment_status", "op": "!=", "value": "NO_LOAN" }
+    ]
+  },
+  "condition_tree": {
+    "type": "CONDITION",
+    "expression": {
+      "field": "A.v2.debt.transfer_amount_today_vnd",
+      "agg": "sum",
+      "window": { "type": "tumbling", "time": "10m" },
+      "op": ">=", "threshold": 50000000.00
+    }
+  }
+}
+```
 
-### Expression Types
-1. **Categorical**: `A.v2.customer_segment == 'PREMIUM'`
-2. **Numeric**: `A.v2.age >= 35`, `B.v2.risk_signals.fraud_probability_score > 75.0`
-3. **Boolean**: `A.v2.is_vip_member == true`, `B.v2.risk_signals.is_suspicious_ip == true`
-4. **Window Aggregation** (Structured object):
-   ```json
-   {
-     "type": "CONDITION",
-     "expression": {
-       "field": "A.v2.debt.transfer_amount_today_vnd",
-       "agg": "sum",
-       "window": { "type": "tumbling", "time": "10m" },
-       "op": ">=",
-       "threshold": 50000000.00
-     }
-   }
-   ```
-5. **Linear Combination**: `(A.v2.daily_spend_total_vnd * 0.7 + A.v2.debt.transfer_amount_today_vnd * 0.3) >= 50000000.00`
+### Path Notation & Source Resolution
+- **`trigger_criteria.conditions`**: Local field paths (e.g. `customer_segment` or `debt.loan_repayment_status`) omitting `{source}.v2.` prefix since source & version are top-level fields.
+- **`condition_tree`**: Full dot paths (`{source}.v2.{field}` or `{source}.v2.{group}.{field}`). Nodes can target source A or B independently of `trigger_criteria.source`.
+
+### Expression Types & Operators
+- **Operators**: `==`, `!=`, `<`, `>`, `<=`, `>=`, `IN`. (`IN` supported for static/dynamic categorical and static numeric).
+- **Categorical**: `A.v2.customer_segment IN ['PREMIUM', 'VIP']`
+- **Numeric**: `A.v2.age IN [25, 30, 35]`, `B.v2.risk_signals.fraud_probability_score > 75.0`
+- **Boolean**: `A.v2.is_vip_member == true`, `B.v2.risk_signals.is_suspicious_ip == true`
+- **Window Aggregation**: Structured object (`field`, `agg`, `window` `{ type, time }`, `op`, `threshold`)
+- **Linear Combination**: `(A.v2.daily_spend_total_vnd * 0.7 + A.v2.debt.transfer_amount_today_vnd * 0.3) >= 50000000.00`
 
 ---
 
@@ -147,7 +157,6 @@ Condition trees (AND/OR gates + CONDITION leaves, depth 2–5). Rule targets sou
 | `schema.version` | `v2` | Schema version tag |
 | `reqPerSecond` | `10` | Event throughput |
 | `idRange` | `100` | Customer ID pool size |
-| `skewIdCount` | `5` | Number of skewed IDs |
-| `skewPctPerSkewId` | `10.0` | Traffic share per skew ID (%) |
 | `totalRules` | `1000` | Number of rules to generate |
 | `maxUserId` | `20` | Max user_id in rule metadata |
+| `maxTreeDepth` | `2` | Max condition_tree AST depth (randomized 1..maxTreeDepth) |

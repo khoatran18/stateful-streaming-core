@@ -67,23 +67,109 @@ public class RuleGenerator {
 
     // Generates totalRules rules and writes them as a JSON array to filePath.
     // maxUserId - upper bound for random user_id in each rule's metadata (drawn from "user_001" to "user_<maxUserId>").
-    // Each rule randomly targets source A or B. All field references use dot-path notation.
-    public void generateRulesToFile(int totalRules, String filePath, int maxUserId) throws IOException {
+    // maxTreeDepth - maximum depth for the condition_tree AST (tree depth is randomized between 1 and maxTreeDepth per rule).
+    // Each rule has a trigger_criteria source, while condition_tree nodes can independently target source A or B.
+    public void generateRulesToFile(int totalRules, String filePath, int maxUserId, int maxTreeDepth) throws IOException {
         List<Map<String, Object>> allRules = new ArrayList<>(totalRules);
+        int validMaxDepth = Math.max(1, maxTreeDepth);
 
         for (int i = 0; i < totalRules; i++) {
-            String src = random.nextBoolean() ? "A" : "B";
+            String triggerSrc = random.nextBoolean() ? "A" : "B";
+            int targetDepth = 1 + random.nextInt(validMaxDepth);
             Map<String, Object> rule = new LinkedHashMap<>();
-            rule.put("rule_id",             "rule_" + src + "_" + i);
+            rule.put("rule_id",             "rule_" + triggerSrc + "_" + i);
             rule.put("schema_fields_count", Constants.SCHEMA_A_TOTAL_FIELDS);
             rule.put("metadata",            buildRuleMetadata(maxUserId));
-            rule.put("condition_tree",      generateNode(1, random.nextInt(4) + 2, src));
+            rule.put("trigger_criteria",     buildTriggerCriteria(triggerSrc));
+            rule.put("condition_tree",      generateNode(1, targetDepth));
             allRules.add(rule);
         }
 
         ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
         mapper.writeValue(new File(filePath), allRules);
         System.out.println("Successfully generated " + totalRules + " rules into: " + filePath);
+    }
+
+    public void generateRulesToFile(int totalRules, String filePath, int maxUserId) throws IOException {
+        generateRulesToFile(totalRules, filePath, maxUserId, 2);
+    }
+
+    // Builds top-level pre-filter trigger criteria (source, version, list of ANDed condition filters).
+    // Field names omit the source.version prefix since source and version are explicit fields.
+    private Map<String, Object> buildTriggerCriteria(String src) {
+        Map<String, Object> trigger = new LinkedHashMap<>();
+        trigger.put("source",  src);
+        trigger.put("version", "v2");
+
+        List<FieldDefinition> candidatePool = new ArrayList<>();
+        candidatePool.addAll(staticCatPool(src));
+        candidatePool.addAll(dynCatPool(src));
+        candidatePool.addAll(staticNumPool(src));
+        candidatePool.addAll(staticBoolPool(src));
+        candidatePool.addAll(dynBoolPool(src));
+        candidatePool.addAll(dynNumPool(src));
+
+        Collections.shuffle(candidatePool, random);
+        int conditionCount = 1 + random.nextInt(3); // 1, 2, or 3 conditions
+
+        List<Map<String, Object>> conditions = new ArrayList<>();
+        for (int i = 0; i < Math.min(conditionCount, candidatePool.size()); i++) {
+            FieldDefinition fd = candidatePool.get(i);
+            Map<String, Object> cond = new LinkedHashMap<>();
+            cond.put("field", localFieldPath(src, fd));
+
+            if ("ENUM".equals(fd.getConstraintKind())) {
+                String[] ops = {"==", "!=", "IN"};
+                String op = ops[random.nextInt(ops.length)];
+                cond.put("op", op);
+                if ("IN".equals(op)) {
+                    List<String> allVals = fd.getEnumValues();
+                    int count = Math.min(allVals.size(), 2 + random.nextInt(3));
+                    List<String> shuffled = new ArrayList<>(allVals);
+                    Collections.shuffle(shuffled, random);
+                    cond.put("value", shuffled.subList(0, count));
+                } else {
+                    cond.put("value", fd.getEnumValues().get(random.nextInt(fd.getEnumValues().size())));
+                }
+            } else if ("BOOLEAN".equals(fd.getType())) {
+                String op = random.nextBoolean() ? "==" : "!=";
+                cond.put("op", op);
+                cond.put("value", random.nextBoolean());
+            } else if ("static_categorical".equals(fd.getCategory()) || "static_numeric".equals(fd.getCategory())) {
+                String[] ops = {"==", "!=", "<=", ">=", "<", ">", "IN"};
+                String op = ops[random.nextInt(ops.length)];
+                cond.put("op", op);
+                if ("IN".equals(op)) {
+                    int count = 2 + random.nextInt(3);
+                    List<Object> vals = new ArrayList<>();
+                    for (int k = 0; k < count; k++) {
+                        vals.add(formatValue(fd, randomInRange(fd)));
+                    }
+                    cond.put("value", vals);
+                } else {
+                    cond.put("value", formatValue(fd, randomInRange(fd)));
+                }
+            } else { // dynamic numeric
+                String[] ops = {"<=", ">=", "<", ">"};
+                String op = ops[random.nextInt(ops.length)];
+                cond.put("op", op);
+                cond.put("value", formatValue(fd, randomInRange(fd)));
+            }
+
+            conditions.add(cond);
+        }
+
+        trigger.put("conditions", conditions);
+        return trigger;
+    }
+
+    private Object formatValue(FieldDefinition fd, double value) {
+        if ("INT".equals(fd.getType())) {
+            return (int) Math.round(value);
+        } else if ("FLOAT".equals(fd.getType())) {
+            return Double.parseDouble(String.format(Locale.US, "%.2f", value));
+        }
+        return String.format(Locale.US, "%.2f", value);
     }
 
     // Builds the metadata block for one rule.
@@ -96,26 +182,25 @@ public class RuleGenerator {
         return meta;
     }
 
-    // Recursively builds one AST node. Depth is randomised between 2 and 5 total levels.
-    // At leaf positions (~20% chance) a dynamic-categorical+window AND pair is injected instead
-    // of a simple CONDITION, ensuring dynCat expressions are never standalone.
-    // src - the source schema ("A" or "B") that all field references in this subtree must target.
-    private Map<String, Object> generateNode(int currentDepth, int maxDepth, String src) {
+    // Recursively builds one AST node. Depth is randomised between 1 and 2 total levels.
+    // Each node independently picks a target source ("A" or "B") for its expressions.
+    private Map<String, Object> generateNode(int currentDepth, int maxDepth) {
+        String nodeSrc = random.nextBoolean() ? "A" : "B";
         if (currentDepth >= maxDepth || random.nextBoolean()) {
             // ~20% of leaf positions: dynCat paired with window agg in an AND node.
             if (random.nextInt(5) == 0) {
-                return buildDynCatPairNode(src);
+                return buildDynCatPairNode(nodeSrc);
             }
             Map<String, Object> node = new LinkedHashMap<>();
             node.put("type",       "CONDITION");
-            node.put("expression", generateExpression(src));
+            node.put("expression", generateExpression(nodeSrc));
             return node;
         }
         Map<String, Object> node = new LinkedHashMap<>();
         node.put("type", random.nextBoolean() ? "AND" : "OR");
         node.put("children", List.of(
-                generateNode(currentDepth + 1, maxDepth, src),
-                generateNode(currentDepth + 1, maxDepth, src)));
+                generateNode(currentDepth + 1, maxDepth),
+                generateNode(currentDepth + 1, maxDepth)));
         return node;
     }
 
@@ -146,6 +231,21 @@ public class RuleGenerator {
             return src + ".v2." + group + "." + fd.getName();
         }
         return src + ".v2." + fd.getName();
+    }
+
+    // Local field path helper for trigger_criteria (omitting {src}.v2. prefix):
+    // returns {name} for root fields, or {group}.{name} for fields in a nested group.
+    private String localFieldPath(String src, FieldDefinition fd) {
+        Set<String> nestedNames = "A".equals(src)
+                ? Constants.SCHEMA_A_NESTED_DYNAMIC_FIELD_NAMES
+                : Constants.SCHEMA_B_NESTED_DYNAMIC_FIELD_NAMES;
+        if (nestedNames.contains(fd.getName())) {
+            String group = "A".equals(src)
+                    ? Constants.SCHEMA_A_NESTED_DYNAMIC_GROUP
+                    : Constants.SCHEMA_B_NESTED_DYNAMIC_GROUP;
+            return group + "." + fd.getName();
+        }
+        return fd.getName();
     }
 
     // ── Field pool helpers ────────────────────────────────────────────────────
@@ -199,25 +299,38 @@ public class RuleGenerator {
 
     // Type 0: static categorical expression.
     // Uses static categorical fields for the chosen source (all are flat at event root).
-    // Operators: == or !=. Value picked from the field's actual enum_values.
-    // Dynamic categorical fields are excluded — see buildDynCatPairNode.
+    // Operators: ==, !=, or IN. Value picked from the field's actual enum_values.
     // Examples:
     //   A.v2.loyalty_tier == 'GOLD'
+    //   A.v2.customer_segment IN ['PREMIUM', 'VIP']
     //   B.v2.home_province != 'HANOI'
     private String buildCategoricalExpr(String src) {
         List<FieldDefinition> pool = staticCatPool(src);
         FieldDefinition fd = pool.get(random.nextInt(pool.size()));
-        String op  = random.nextBoolean() ? "==" : "!=";
+        String[] ops = {"==", "!=", "IN"};
+        String op = ops[random.nextInt(ops.length)];
+
+        if ("IN".equals(op)) {
+            List<String> allVals = fd.getEnumValues();
+            int count = Math.min(allVals.size(), 2 + random.nextInt(3));
+            List<String> shuffled = new ArrayList<>(allVals);
+            Collections.shuffle(shuffled, random);
+            String inListStr = shuffled.subList(0, count).stream()
+                    .map(v -> "'" + v + "'")
+                    .collect(java.util.stream.Collectors.joining(", ", "[", "]"));
+            return fieldPath(src, fd) + " IN " + inListStr;
+        }
+
         String val = fd.getEnumValues().get(random.nextInt(fd.getEnumValues().size()));
         return fieldPath(src, fd) + " " + op + " '" + val + "'";
     }
 
     // Type 1: raw numeric expression using static or dynamic numeric fields.
-    // Static fields allow full operator set (==, !=, <=, >=, <, >).
+    // Static fields allow full operator set (==, !=, <=, >=, <, >, IN).
     // Dynamic fields allow inequalities only (<=, >=, <, >).
-    // Threshold is a random value within [field.minValue, field.maxValue].
     // Examples:
     //   A.v2.age >= 35                                 (static, flat)
+    //   A.v2.age IN [25, 30, 35]                       (static, flat)
     //   A.v2.daily_spend_total_vnd > 50000000.00       (dynamic, flat)
     //   B.v2.risk_signals.fraud_probability_score >= 75.00  (dynamic, nested)
     private String buildRawNumericExpr(String src) {
@@ -230,7 +343,7 @@ public class RuleGenerator {
             List<FieldDefinition> pool = staticNumPool(src);
             fd           = pool.get(random.nextInt(pool.size()));
             fieldPathStr = fieldPath(src, fd);        // static numeric fields are flat
-            ops          = new String[]{"==", "!=", "<=", ">=", "<", ">"};
+            ops          = new String[]{"==", "!=", "<=", ">=", "<", ">", "IN"};
         } else {
             List<FieldDefinition> pool = dynNumPool(src);
             fd           = pool.get(random.nextInt(pool.size()));
@@ -238,7 +351,16 @@ public class RuleGenerator {
             ops          = new String[]{"<=", ">=", "<", ">"};
         }
 
-        String op        = ops[random.nextInt(ops.length)];
+        String op = ops[random.nextInt(ops.length)];
+        if ("IN".equals(op)) {
+            int count = 2 + random.nextInt(3);
+            List<String> valStrs = new ArrayList<>();
+            for (int k = 0; k < count; k++) {
+                valStrs.add(formatThreshold(fd, randomInRange(fd)));
+            }
+            return fieldPathStr + " IN [" + String.join(", ", valStrs) + "]";
+        }
+
         double threshold = randomInRange(fd);
         return fieldPathStr + " " + op + " " + formatThreshold(fd, threshold);
     }
@@ -288,16 +410,30 @@ public class RuleGenerator {
 
     // Builds an AND node pairing a dynamic categorical filter with a window aggregation.
     // Dynamic categorical fields are flat or nested depending on field.
-    // Operators for dynCat: == or != only (categorical matching, no ordering).
+    // Operators for dynCat: ==, !=, or IN.
     // Example dynCat expression:
     //   A.v2.transaction_type == 'TRANSFER'
-    //   A.v2.debt.loan_repayment_status == 'OVERDUE_31_90'
+    //   A.v2.debt.loan_repayment_status IN ['OVERDUE_1_30', 'OVERDUE_31_90']
     private Map<String, Object> buildDynCatPairNode(String src) {
         List<FieldDefinition> pool = dynCatPool(src);
         FieldDefinition fd  = pool.get(random.nextInt(pool.size()));
-        String op  = random.nextBoolean() ? "==" : "!=";
-        String val = fd.getEnumValues().get(random.nextInt(fd.getEnumValues().size()));
-        String dynCatExpr = fieldPath(src, fd) + " " + op + " '" + val + "'";
+        String[] ops = {"==", "!=", "IN"};
+        String op = ops[random.nextInt(ops.length)];
+        String dynCatExpr;
+
+        if ("IN".equals(op)) {
+            List<String> allVals = fd.getEnumValues();
+            int count = Math.min(allVals.size(), 2 + random.nextInt(3));
+            List<String> shuffled = new ArrayList<>(allVals);
+            Collections.shuffle(shuffled, random);
+            String inListStr = shuffled.subList(0, count).stream()
+                    .map(v -> "'" + v + "'")
+                    .collect(java.util.stream.Collectors.joining(", ", "[", "]"));
+            dynCatExpr = fieldPath(src, fd) + " IN " + inListStr;
+        } else {
+            String val = fd.getEnumValues().get(random.nextInt(fd.getEnumValues().size()));
+            dynCatExpr = fieldPath(src, fd) + " " + op + " '" + val + "'";
+        }
 
         Map<String, Object> dynCatNode = new LinkedHashMap<>();
         dynCatNode.put("type",       "CONDITION");

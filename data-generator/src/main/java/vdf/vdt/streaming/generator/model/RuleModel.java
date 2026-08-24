@@ -15,6 +15,9 @@ public class RuleModel {
     @JsonProperty("metadata")
     private RuleMetadata metadata;
 
+    @JsonProperty("trigger_criteria")
+    private TriggerCriteria triggerCriteria;
+
     @JsonProperty("condition_tree")
     private RuleNode conditionTree;
 
@@ -28,8 +31,68 @@ public class RuleModel {
     public RuleMetadata getMetadata() { return metadata; }
     public void setMetadata(RuleMetadata metadata) { this.metadata = metadata; }
 
+    public TriggerCriteria getTriggerCriteria() { return triggerCriteria; }
+    public void setTriggerCriteria(TriggerCriteria triggerCriteria) { this.triggerCriteria = triggerCriteria; }
+
     public RuleNode getConditionTree() { return conditionTree; }
     public void setConditionTree(RuleNode conditionTree) { this.conditionTree = conditionTree; }
+
+    // Pre-filter trigger criteria (source, version, list of ANDed condition filters)
+    public static class TriggerCriteria {
+        @JsonProperty("source")
+        private String source;
+
+        @JsonProperty("version")
+        private String version;
+
+        @JsonProperty("conditions")
+        private List<TriggerCondition> conditions;
+
+        public TriggerCriteria() {}
+
+        public TriggerCriteria(String source, String version, List<TriggerCondition> conditions) {
+            this.source = source;
+            this.version = version;
+            this.conditions = conditions;
+        }
+
+        public String getSource() { return source; }
+        public void setSource(String source) { this.source = source; }
+
+        public String getVersion() { return version; }
+        public void setVersion(String version) { this.version = version; }
+
+        public List<TriggerCondition> getConditions() { return conditions; }
+        public void setConditions(List<TriggerCondition> conditions) { this.conditions = conditions; }
+    }
+
+    public static class TriggerCondition {
+        @JsonProperty("field")
+        private String field;
+
+        @JsonProperty("op")
+        private String op;
+
+        @JsonProperty("value")
+        private Object value;
+
+        public TriggerCondition() {}
+
+        public TriggerCondition(String field, String op, Object value) {
+            this.field = field;
+            this.op = op;
+            this.value = value;
+        }
+
+        public String getField() { return field; }
+        public void setField(String field) { this.field = field; }
+
+        public String getOp() { return op; }
+        public void setOp(String op) { this.op = op; }
+
+        public Object getValue() { return value; }
+        public void setValue(Object value) { this.value = value; }
+    }
 
     // Timestamp (ISO-8601) and author of this generated rule.
     public static class RuleMetadata {
