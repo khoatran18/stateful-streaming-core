@@ -8,16 +8,15 @@ import java.util.List;
 
 // Metadata for a single field in the event schema.
 //
-// Constraint kinds:
-//   ENUM  - value must be one of enum_values (used for all categorical fields)
-//   RANGE - value is numeric and must be within [min_value, max_value]
-//           INT means integer, FLOAT means floating-point
-//
 // Categories (one per field):
-//   static_categorical  - ENUM, fixed per customer ID (e.g. loyalty_tier)
-//   dynamic_categorical - ENUM, changes each event (e.g. fraud_alert_level)
-//   static_numeric      - RANGE, fixed per customer ID (e.g. age)
-//   dynamic_numeric     - RANGE, real-time metric per event (e.g. current_balance_vnd)
+//   static_categorical  - fixed per customer ID (e.g. loyalty_tier)
+//   dynamic_categorical - changes each event (e.g. fraud_alert_level)
+//   static_numeric      - fixed per customer ID (e.g. age)
+//   dynamic_numeric     - real-time metric per event (e.g. current_balance_vnd)
+//
+// Constraint fields (constraintKind, enumValues, minValue, maxValue) are used internally
+// for data generation and rule threshold derivation, but are NOT serialised to JSON.
+// The schema payload only exposes name and type; constraint details stay server-side.
 //
 // Jackson requires a public no-arg constructor and standard getters/setters.
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -26,29 +25,33 @@ public class FieldDefinition {
     @JsonProperty("name")
     private String name;
 
-    // "STRING", "INT", or "FLOAT". STRING always pairs with ENUM, INT/FLOAT with RANGE.
+    // "STRING", "INT", "FLOAT", "TIMESTAMP", or "BOOLEAN".
+    // STRING pairs with constraintKind ENUM.
+    // INT/FLOAT pair with constraintKind RANGE.
+    // TIMESTAMP pairs with constraintKind TIMESTAMP; minValue/maxValue are epoch-seconds.
+    // BOOLEAN pairs with constraintKind BOOLEAN.
     @JsonProperty("type")
     private String type;
 
-    // "ENUM" or "RANGE"
-    @JsonProperty("constraint_kind")
+    // "ENUM" or "RANGE" — internal use only, not serialised.
+    @JsonIgnore
     private String constraintKind;
 
     // One of: static_categorical, dynamic_categorical, static_numeric, dynamic_numeric.
-    // Runtime-only — not serialized to JSON. In the schema payload the category is already
+    // Runtime-only — not serialised to JSON. In the schema payload the category is already
     // conveyed by the wrapping key (e.g. "static_categorical": [...]).
     private String category;
 
-    // Allowed values when constraintKind == "ENUM"
-    @JsonProperty("enum_values")
+    // Allowed values when constraintKind == "ENUM" — internal use only, not serialised.
+    @JsonIgnore
     private List<String> enumValues;
 
-    // Inclusive lower bound when constraintKind == "RANGE"
-    @JsonProperty("min_value")
+    // Inclusive lower bound when constraintKind == "RANGE" — internal use only, not serialised.
+    @JsonIgnore
     private Double minValue;
 
-    // Inclusive upper bound when constraintKind == "RANGE"
-    @JsonProperty("max_value")
+    // Inclusive upper bound when constraintKind == "RANGE" — internal use only, not serialised.
+    @JsonIgnore
     private Double maxValue;
 
     public FieldDefinition() {}
@@ -84,6 +87,26 @@ public class FieldDefinition {
         return fd;
     }
 
+    // Creates a TIMESTAMP field. minEpochSec / maxEpochSec are Unix epoch-seconds
+    // (doubles at this scale have no precision loss). DataGenerator emits ISO-8601 strings.
+    public static FieldDefinition ofTimestamp(String name, long minEpochSec, long maxEpochSec) {
+        FieldDefinition fd = new FieldDefinition();
+        fd.name           = name;
+        fd.type           = "TIMESTAMP";
+        fd.constraintKind = "TIMESTAMP";
+        fd.minValue       = (double) minEpochSec;
+        fd.maxValue       = (double) maxEpochSec;
+        return fd;
+    }
+
+    public static FieldDefinition ofBoolean(String name) {
+        FieldDefinition fd = new FieldDefinition();
+        fd.name           = name;
+        fd.type           = "BOOLEAN";
+        fd.constraintKind = "BOOLEAN";
+        return fd;
+    }
+
     // Stamps the category and returns this for use in stream pipelines:
     //   fields.stream().map(fd -> fd.withCategory("static_categorical")).toList()
     public FieldDefinition withCategory(String category) {
@@ -91,7 +114,7 @@ public class FieldDefinition {
         return this;
     }
 
-    // --- Getters & setters (required for Jackson) ---
+    // --- Getters & setters (required for Jackson and internal logic) ---
 
     public String getName()                     { return name; }
     public void   setName(String name)          { this.name = name; }

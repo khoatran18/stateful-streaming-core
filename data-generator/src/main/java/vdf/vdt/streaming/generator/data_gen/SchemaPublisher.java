@@ -5,14 +5,19 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import vdf.vdt.streaming.generator.common.Constants;
 import vdf.vdt.streaming.generator.common.KafkaProducerClient;
 
+import vdf.vdt.streaming.generator.model.FieldDefinition;
+
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 // Publishes both schema definitions (A and B) on startup to:
 //   1. A dedicated Kafka schema topic — two messages, one per schema, keyed by "<version>:A"
@@ -71,29 +76,98 @@ public class SchemaPublisher {
     }
 
     // Assembles the schema payload for one source (A or B).
-    // Fields list contains full FieldDefinition objects so downstream consumers can reconstruct
-    // all metadata from the message alone.
+    // The "structure" key mirrors the event JSON exactly so consumers can reconstruct field paths:
+    //   - flat fields appear as  { "fieldName": { "type": "STRING|INT|FLOAT|TIMESTAMP" } }
+    //   - the nested group appears as { "debt"|"risk_signals": { fieldName: { "type": ... }, ... } }
+    // key_field names the standalone customer identifier (lives in metadata, not in structure).
     private Map<String, Object> buildSchemaPayload(String version, String source) {
-        Map<String, Object> fields = new LinkedHashMap<>();
+        Map<String, Object> schemaMeta = new LinkedHashMap<>();
+        schemaMeta.put("schema_version", version);
+        schemaMeta.put("source",         source);
+        schemaMeta.put("timestamp",      OffsetDateTime.now().format(TIMESTAMP_FMT));
 
-        if ("A".equals(source)) {
-            fields.put("static_categorical",  Constants.SCHEMA_A_STATIC_CATEGORICAL_FIELDS);
-            fields.put("dynamic_categorical", Constants.SCHEMA_A_DYNAMIC_CATEGORICAL_FIELDS);
-            fields.put("static_numeric",      Constants.SCHEMA_A_STATIC_NUMERIC_FIELDS);
-            fields.put("dynamic_numeric",     Constants.SCHEMA_A_DYNAMIC_NUMERIC_FIELDS);
-        } else {
-            fields.put("static_categorical",  Constants.SCHEMA_B_STATIC_CATEGORICAL_FIELDS);
-            fields.put("dynamic_categorical", Constants.SCHEMA_B_DYNAMIC_CATEGORICAL_FIELDS);
-            fields.put("static_numeric",      Constants.SCHEMA_B_STATIC_NUMERIC_FIELDS);
-            fields.put("dynamic_numeric",     Constants.SCHEMA_B_DYNAMIC_NUMERIC_FIELDS);
+        boolean isA = "A".equals(source);
+
+        List<FieldDefinition> staticCat  = isA ? Constants.SCHEMA_A_STATIC_CATEGORICAL_FIELDS
+                                               : Constants.SCHEMA_B_STATIC_CATEGORICAL_FIELDS;
+        List<FieldDefinition> staticNum  = isA ? Constants.SCHEMA_A_STATIC_NUMERIC_FIELDS
+                                               : Constants.SCHEMA_B_STATIC_NUMERIC_FIELDS;
+        List<FieldDefinition> staticTs   = isA ? Constants.SCHEMA_A_STATIC_TIMESTAMP_FIELDS
+                                               : Constants.SCHEMA_B_STATIC_TIMESTAMP_FIELDS;
+        List<FieldDefinition> staticBool = isA ? Constants.SCHEMA_A_STATIC_BOOLEAN_FIELDS
+                                               : Constants.SCHEMA_B_STATIC_BOOLEAN_FIELDS;
+        List<FieldDefinition> dynCat     = isA ? Constants.SCHEMA_A_DYNAMIC_CATEGORICAL_FIELDS
+                                               : Constants.SCHEMA_B_DYNAMIC_CATEGORICAL_FIELDS;
+        List<FieldDefinition> dynNum     = isA ? Constants.SCHEMA_A_DYNAMIC_NUMERIC_FIELDS
+                                               : Constants.SCHEMA_B_DYNAMIC_NUMERIC_FIELDS;
+        List<FieldDefinition> dynTs      = isA ? Constants.SCHEMA_A_DYNAMIC_TIMESTAMP_FIELDS
+                                               : Constants.SCHEMA_B_DYNAMIC_TIMESTAMP_FIELDS;
+        List<FieldDefinition> dynBool    = isA ? Constants.SCHEMA_A_DYNAMIC_BOOLEAN_FIELDS
+                                               : Constants.SCHEMA_B_DYNAMIC_BOOLEAN_FIELDS;
+        String     nestedGroupName   = isA ? Constants.SCHEMA_A_NESTED_DYNAMIC_GROUP
+                                          : Constants.SCHEMA_B_NESTED_DYNAMIC_GROUP;
+        Set<String> nestedFieldNames = isA ? Constants.SCHEMA_A_NESTED_DYNAMIC_FIELD_NAMES
+                                          : Constants.SCHEMA_B_NESTED_DYNAMIC_FIELD_NAMES;
+
+        // Build structure map in the same insertion order as the event JSON.
+        Map<String, Object> structure    = new LinkedHashMap<>();
+        Map<String, Object> nestedStruct = new LinkedHashMap<>();
+
+        // Metadata block structure
+        Map<String, Object> metadataStruct = new LinkedHashMap<>();
+        metadataStruct.put("customer_id",    Map.of("type", "STRING",    "category", "static_categorical"));
+        metadataStruct.put("schema_version", Map.of("type", "STRING",    "category", "static_categorical"));
+        metadataStruct.put("source",         Map.of("type", "STRING",    "category", "static_categorical"));
+        metadataStruct.put("event_time",     Map.of("type", "TIMESTAMP", "category", "dynamic_timestamp"));
+        structure.put("metadata", metadataStruct);
+
+        for (FieldDefinition fd : staticCat)  { structure.put(fd.getName(), fieldSpec(fd)); }
+        for (FieldDefinition fd : staticNum)  { structure.put(fd.getName(), fieldSpec(fd)); }
+        for (FieldDefinition fd : staticTs)   { structure.put(fd.getName(), fieldSpec(fd)); }
+        for (FieldDefinition fd : staticBool) { structure.put(fd.getName(), fieldSpec(fd)); }
+        for (FieldDefinition fd : dynCat) {
+            if (nestedFieldNames.contains(fd.getName())) {
+                nestedStruct.put(fd.getName(), fieldSpec(fd));
+            } else {
+                structure.put(fd.getName(), fieldSpec(fd));
+            }
         }
+        for (FieldDefinition fd : dynTs) {
+            if (nestedFieldNames.contains(fd.getName())) {
+                nestedStruct.put(fd.getName(), fieldSpec(fd));
+            } else {
+                structure.put(fd.getName(), fieldSpec(fd));
+            }
+        }
+        for (FieldDefinition fd : dynBool) {
+            if (nestedFieldNames.contains(fd.getName())) {
+                nestedStruct.put(fd.getName(), fieldSpec(fd));
+            } else {
+                structure.put(fd.getName(), fieldSpec(fd));
+            }
+        }
+        for (FieldDefinition fd : dynNum) {
+            if (nestedFieldNames.contains(fd.getName())) {
+                nestedStruct.put(fd.getName(), fieldSpec(fd));
+            } else {
+                structure.put(fd.getName(), fieldSpec(fd));
+            }
+        }
+        structure.put(nestedGroupName, nestedStruct);
 
         Map<String, Object> schema = new LinkedHashMap<>();
-        schema.put("version",      version);
-        schema.put("source",       source);
+        schema.put("metadata",     schemaMeta);
+        schema.put("key_field",    "customer_id");
         schema.put("total_fields", Constants.SCHEMA_A_TOTAL_FIELDS); // same count for both
-        schema.put("fields",       fields);
+        schema.put("structure",    structure);
         return schema;
+    }
+
+    private Map<String, Object> fieldSpec(FieldDefinition fd) {
+        Map<String, Object> spec = new LinkedHashMap<>();
+        spec.put("type",     fd.getType());
+        spec.put("category", fd.getCategory());
+        return spec;
     }
 
     private void writeJsonFile(Map<String, Object> schema, File target) throws IOException {

@@ -5,6 +5,8 @@ import vdf.vdt.streaming.generator.common.KafkaProducerClient;
 import vdf.vdt.streaming.generator.model.FieldDefinition;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 // Continuously generates CDP customer events for Schema A (transactions) and Schema B
@@ -23,6 +25,10 @@ public class DataGenerator {
 
     private final KafkaProducerClient kafkaClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    // Timestamp formatter for metadata — ISO-8601 with zone offset (e.g. "2026-08-24T09:55:05+07:00").
+    private static final DateTimeFormatter TIMESTAMP_FMT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssxxx");
 
     public DataGenerator(KafkaProducerClient kafkaClient) {
         this.kafkaClient = kafkaClient;
@@ -115,56 +121,114 @@ public class DataGenerator {
     // Builds one customer event for the given entity ID and schema source (A or B).
     // Static fields use a seeded Random derived from entityId — same ID always yields the same values.
     // Dynamic fields use the global (unseeded) Random and vary each event.
+    //
+    // Event structure (26 flat + 4 nested = 30 leaf fields):
+    //   metadata                     — customer_id, schema_version, source, timestamp
+    //   <all static + most dynamic>  — flat at event root
+    //   debt (A) / risk_signals (B)  — nested object with 4 dynamic numeric fields
     private Map<String, Object> generateEvent(long entityId, String source,
                                               Random globalRandom, String version) {
-        Map<String, Object> event = new LinkedHashMap<>();
-        event.put("id",             "ID_" + entityId);
-        event.put("timestamp",      System.currentTimeMillis());
-        event.put("schema_version", version);
-        event.put("source",         source);
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("customer_id",    "ID_" + entityId);
+        metadata.put("schema_version", version);
+        metadata.put("source",         source);
+        metadata.put("event_time",     OffsetDateTime.now().format(TIMESTAMP_FMT));
 
-        // Seeded per-entity random for static attributes — deterministic per ID
+        // Seeded per-entity random for static attributes — deterministic per ID.
         Random idRandom = new Random(entityId * 31L);
 
-        if ("A".equals(source)) {
-            for (FieldDefinition fd : Constants.SCHEMA_A_STATIC_CATEGORICAL_FIELDS) {
-                event.put(fd.getName(), generateFieldValue(fd, idRandom));
+        boolean isA = "A".equals(source);
+        List<FieldDefinition> staticCat  = isA ? Constants.SCHEMA_A_STATIC_CATEGORICAL_FIELDS
+                                               : Constants.SCHEMA_B_STATIC_CATEGORICAL_FIELDS;
+        List<FieldDefinition> staticNum  = isA ? Constants.SCHEMA_A_STATIC_NUMERIC_FIELDS
+                                               : Constants.SCHEMA_B_STATIC_NUMERIC_FIELDS;
+        List<FieldDefinition> staticTs   = isA ? Constants.SCHEMA_A_STATIC_TIMESTAMP_FIELDS
+                                               : Constants.SCHEMA_B_STATIC_TIMESTAMP_FIELDS;
+        List<FieldDefinition> staticBool = isA ? Constants.SCHEMA_A_STATIC_BOOLEAN_FIELDS
+                                               : Constants.SCHEMA_B_STATIC_BOOLEAN_FIELDS;
+        List<FieldDefinition> dynCat     = isA ? Constants.SCHEMA_A_DYNAMIC_CATEGORICAL_FIELDS
+                                               : Constants.SCHEMA_B_DYNAMIC_CATEGORICAL_FIELDS;
+        List<FieldDefinition> dynNum     = isA ? Constants.SCHEMA_A_DYNAMIC_NUMERIC_FIELDS
+                                               : Constants.SCHEMA_B_DYNAMIC_NUMERIC_FIELDS;
+        List<FieldDefinition> dynTs      = isA ? Constants.SCHEMA_A_DYNAMIC_TIMESTAMP_FIELDS
+                                               : Constants.SCHEMA_B_DYNAMIC_TIMESTAMP_FIELDS;
+        List<FieldDefinition> dynBool    = isA ? Constants.SCHEMA_A_DYNAMIC_BOOLEAN_FIELDS
+                                               : Constants.SCHEMA_B_DYNAMIC_BOOLEAN_FIELDS;
+        String    nestedGroupName  = isA ? Constants.SCHEMA_A_NESTED_DYNAMIC_GROUP
+                                        : Constants.SCHEMA_B_NESTED_DYNAMIC_GROUP;
+        Set<String> nestedFieldNames = isA ? Constants.SCHEMA_A_NESTED_DYNAMIC_FIELD_NAMES
+                                          : Constants.SCHEMA_B_NESTED_DYNAMIC_FIELD_NAMES;
+
+        Map<String, Object> event       = new LinkedHashMap<>();
+        Map<String, Object> nestedGroup = new LinkedHashMap<>();
+
+        event.put("metadata", metadata);
+
+        // Static fields are flat at event root — deterministic per customer ID.
+        for (FieldDefinition fd : staticCat)  { event.put(fd.getName(), generateFieldValue(fd, idRandom)); }
+        for (FieldDefinition fd : staticNum)  { event.put(fd.getName(), generateFieldValue(fd, idRandom)); }
+        for (FieldDefinition fd : staticTs)   { event.put(fd.getName(), generateFieldValue(fd, idRandom)); }
+        for (FieldDefinition fd : staticBool) { event.put(fd.getName(), generateFieldValue(fd, idRandom)); }
+
+        // Dynamic categorical fields: flat at root unless part of nested group.
+        for (FieldDefinition fd : dynCat) {
+            Object value = generateFieldValue(fd, globalRandom);
+            if (nestedFieldNames.contains(fd.getName())) {
+                nestedGroup.put(fd.getName(), value);
+            } else {
+                event.put(fd.getName(), value);
             }
-            for (FieldDefinition fd : Constants.SCHEMA_A_DYNAMIC_CATEGORICAL_FIELDS) {
-                event.put(fd.getName(), generateFieldValue(fd, globalRandom));
-            }
-            for (FieldDefinition fd : Constants.SCHEMA_A_STATIC_NUMERIC_FIELDS) {
-                event.put(fd.getName(), generateFieldValue(fd, idRandom));
-            }
-            for (FieldDefinition fd : Constants.SCHEMA_A_DYNAMIC_NUMERIC_FIELDS) {
-                event.put(fd.getName(), generateFieldValue(fd, globalRandom));
-            }
-        } else {
-            for (FieldDefinition fd : Constants.SCHEMA_B_STATIC_CATEGORICAL_FIELDS) {
-                event.put(fd.getName(), generateFieldValue(fd, idRandom));
-            }
-            for (FieldDefinition fd : Constants.SCHEMA_B_DYNAMIC_CATEGORICAL_FIELDS) {
-                event.put(fd.getName(), generateFieldValue(fd, globalRandom));
-            }
-            for (FieldDefinition fd : Constants.SCHEMA_B_STATIC_NUMERIC_FIELDS) {
-                event.put(fd.getName(), generateFieldValue(fd, idRandom));
-            }
-            for (FieldDefinition fd : Constants.SCHEMA_B_DYNAMIC_NUMERIC_FIELDS) {
-                event.put(fd.getName(), generateFieldValue(fd, globalRandom));
+        }
+        for (FieldDefinition fd : dynTs) { event.put(fd.getName(), generateFieldValue(fd, globalRandom)); }
+
+        // Dynamic boolean fields: flat at root unless part of nested group.
+        for (FieldDefinition fd : dynBool) {
+            Object value = generateFieldValue(fd, globalRandom);
+            if (nestedFieldNames.contains(fd.getName())) {
+                nestedGroup.put(fd.getName(), value);
+            } else {
+                event.put(fd.getName(), value);
             }
         }
 
+        // Dynamic numeric: flat at root unless the field belongs to the nested group.
+        for (FieldDefinition fd : dynNum) {
+            Object value = generateFieldValue(fd, globalRandom);
+            if (nestedFieldNames.contains(fd.getName())) {
+                nestedGroup.put(fd.getName(), value);
+            } else {
+                event.put(fd.getName(), value);
+            }
+        }
+
+        event.put(nestedGroupName, nestedGroup);
         return event;
     }
 
     // Generates a valid value for a field based on its constraint.
-    //   ENUM  -> random pick from enum_values
-    //   INT   -> random integer in [min, max]
-    //   FLOAT -> random double in [min, max)
+    //   ENUM      -> random pick from enum_values
+    //   TIMESTAMP -> random ISO-8601 string within [minEpoch, maxEpoch]
+    //   BOOLEAN   -> random boolean (true/false)
+    //   INT       -> random integer in [min, max]
+    //   FLOAT     -> random double in [min, max)
     private Object generateFieldValue(FieldDefinition fd, Random random) {
         if ("ENUM".equals(fd.getConstraintKind())) {
             List<String> values = fd.getEnumValues();
             return values.get(random.nextInt(values.size()));
+        }
+
+        if ("BOOLEAN".equals(fd.getType())) {
+            return random.nextBoolean();
+        }
+
+        if ("TIMESTAMP".equals(fd.getType())) {
+            long minEpoch = fd.getMinValue().longValue();
+            long maxEpoch = fd.getMaxValue().longValue();
+            long randomEpoch = minEpoch + (long) (random.nextDouble() * (maxEpoch - minEpoch));
+            return OffsetDateTime.ofInstant(
+                    java.time.Instant.ofEpochSecond(randomEpoch),
+                    java.time.ZoneId.systemDefault()
+            ).format(TIMESTAMP_FMT);
         }
 
         double min = fd.getMinValue();

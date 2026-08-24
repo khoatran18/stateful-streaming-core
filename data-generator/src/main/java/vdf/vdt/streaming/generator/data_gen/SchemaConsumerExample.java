@@ -163,7 +163,7 @@ public class SchemaConsumerExample {
         List<String> errors = new ArrayList<>();
 
         checkRequired(event, "id",             errors);
-        checkRequired(event, "timestamp",      errors);
+        checkRequired(event, "event_time",      errors);
         checkRequired(event, "schema_version", errors);
         checkRequired(event, "source",         errors);
 

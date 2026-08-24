@@ -18,11 +18,11 @@ generator/
 │   ├── SchemaConsumerExample.java # reference: reads schema topic, validates events
 │   └── Main.java
 ├── model/
-│   ├── FieldDefinition.java       # name, type, constraint_kind, enum/range values
-│   ├── RuleModel.java             # rule_id, schema_fields_count, condition_tree (AST)
+│   ├── FieldDefinition.java       # name, type (constraint fields are internal-only, not in JSON)
+│   ├── RuleModel.java             # rule_id, schema_fields_count, metadata, condition_tree (AST)
 │   └── SchemaDefinition.java      # lightweight wrapper: totalFields + column name lists
 └── rule_gen/
-    ├── RuleGenerator.java         # AST rule generator, 4 expression types (uses 200-field schema)
+    ├── RuleGenerator.java         # AST rule generator, 4 expression types (dual 30-field schema)
     └── Main.java
 ```
 
@@ -39,40 +39,44 @@ data/schema/30/<version>/<timestamp>/schema_b.json
 
 ### Schema A — Transaction Events
 
-| Category | Count | Sample Fields |
-|---|---|---|
-| `static_categorical` | 3 | `customer_segment`, `loyalty_tier`, `risk_rating` |
-| `dynamic_categorical` | 6 | `transaction_type`, `card_status`, `loan_repayment_status` |
-| `static_numeric` | 9 | `age`, `base_credit_score`, `credit_limit_vnd`, `debt_to_income_ratio` |
-| `dynamic_numeric` | 12 | `current_balance_vnd`, `daily_spend_total_vnd`, `transfer_amount_today_vnd` |
+| Group | Category | Count | Sample Fields |
+|---|---|---|---|
+| `profile` | `static_categorical` | 3 | `customer_segment`, `loyalty_tier`, `risk_rating` |
+| `profile` | `static_numeric` | 9 | `age`, `base_credit_score`, `credit_limit_vnd`, `debt_to_income_ratio` |
+| `transaction` | `dynamic_categorical` | 6 | `transaction_type`, `card_status`, `loan_repayment_status` |
+| `transaction` | `dynamic_numeric` | 12 | `current_balance_vnd`, `daily_spend_total_vnd`, `transfer_amount_today_vnd` |
 
 ### Schema B — System Access Logs
 
-| Category | Count | Sample Fields |
-|---|---|---|
-| `static_categorical` | 3 | `home_province`, `preferred_language`, `customer_type` |
-| `dynamic_categorical` | 6 | `session_status`, `login_channel`, `device_type`, `auth_method` |
-| `static_numeric` | 9 | `digital_adoption_score`, `behavioral_score_baseline`, `propensity_churn_score` |
-| `dynamic_numeric` | 12 | `session_duration_seconds`, `response_latency_ms`, `fraud_probability_score` |
+| Group | Category | Count | Sample Fields |
+|---|---|---|---|
+| `profile` | `static_categorical` | 3 | `home_province`, `preferred_language`, `customer_type` |
+| `profile` | `static_numeric` | 9 | `digital_adoption_score`, `behavioral_score_baseline`, `propensity_churn_score` |
+| `session` | `dynamic_categorical` | 6 | `session_status`, `login_channel`, `device_type`, `auth_method` |
+| `session` | `dynamic_numeric` | 12 | `session_duration_seconds`, `response_latency_ms`, `fraud_probability_score` |
 
-Both schemas share the same customer `id` as Kafka message key.
+Both schemas share the same customer `customer_id` as Kafka message key.
 
-Schema JSON payload structure (published to Kafka + local files):
+Schema JSON payload (sent to Kafka + written to file):
 ```json
 {
-  "version": "v2",
-  "source": "A",
+  "metadata": { "schema_version": "v2", "source": "A" },
+  "key_field": "customer_id",
   "total_fields": 30,
-  "fields": {
-    "static_categorical":  [ { "name": "customer_segment", "type": "STRING", ... } ],
-    "dynamic_categorical": [ "..." ],
-    "static_numeric":      [ { "name": "age", "type": "INT", ... } ],
-    "dynamic_numeric":     [ "..." ]
+  "groups": {
+    "profile": {
+      "static_categorical": [ { "name": "customer_segment", "type": "STRING" }, "..." ],
+      "static_numeric":     [ { "name": "age",              "type": "INT"    }, "..." ]
+    },
+    "transaction": {
+      "dynamic_categorical": [ { "name": "transaction_type",      "type": "STRING" }, "..." ],
+      "dynamic_numeric":     [ { "name": "current_balance_vnd",   "type": "FLOAT"  }, "..." ]
+    }
   }
 }
 ```
 
-Kafka headers on both schema messages and data events: `schema-version: v2`, `source: A|B`.
+Kafka headers on both schema messages and data events: `version: v2`, `source: A|B`.
 
 ---
 
@@ -81,10 +85,37 @@ Kafka headers on both schema messages and data events: `schema-version: v2`, `so
 - `ENUM` → random pick from `enum_values`
 - `INT RANGE` → `nextInt(max - min + 1) + min`
 - `FLOAT RANGE` → `min + (max - min) * nextDouble()`
-- Static fields: seeded `Random(entityId * 31L)` — same ID always produces the same values.
-- Dynamic fields: global unseeded `Random` — varies each event.
+- Static fields (`profile` group): seeded `Random(entityId * 31L)` — same ID always produces the same values.
+- Dynamic fields (`transaction`/`session` group): global unseeded `Random` — varies each event.
 - Schema selection per tick: 50/50 random between A and B.
 - Throughput: `sleep(1000 / reqPerSecond)` per iteration.
+
+Data event JSON structure (Schema A example):
+```json
+{
+  "metadata": {
+    "customer_id": "ID_42",
+    "schema_version": "v2",
+    "source": "A",
+    "timestamp": "2026-08-24T12:02:41+07:00"
+  },
+  "profile": {
+    "customer_segment": "PREMIUM",
+    "loyalty_tier": "GOLD",
+    "risk_rating": "LOW",
+    "age": 35,
+    "base_credit_score": 750,
+    "credit_limit_vnd": 50000000.0
+  },
+  "transaction": {
+    "transaction_type": "TRANSFER",
+    "card_status": "ACTIVE",
+    "current_balance_vnd": 12500000.5,
+    "daily_spend_total_vnd": 5000000.0,
+    "transfer_amount_today_vnd": 1500000.0
+  }
+}
+```
 
 ### Skew Data
 
@@ -107,62 +138,71 @@ Otherwise → uniform random from [skewIdCount+1, idRange]
 
 ## Rule Generation
 
-Rules are condition trees (AND/OR gates + CONDITION leaves), depth 2–5, targeting the **200-field legacy schema** in `Constants`. Rule IDs: `rule_200_<i>`.
+Rules are condition trees (AND/OR gates + CONDITION leaves), depth 2–5. Each rule targets one source
+(A or B, chosen randomly). Rule IDs: `rule_{source}_{i}`.
 
+Each rule carries a `metadata` block with `timestamp` (ISO-8601) and `user_id` (random `user_001`..`user_<maxUserId>`).
+
+### Field Reference Format
+
+All field references use the fully-qualified dot-path:
+
+```
+{source}.v2.{group}.{fieldName}
+```
+
+| Field location | Group | Example path | Allowed operators |
+|---|---|---|---|
+| static categorical | `profile` | `A.v2.profile.loyalty_tier` | `==`, `!=` |
+| static numeric | `profile` | `A.v2.profile.age` | `==`, `!=`, `<=`, `>=`, `<`, `>` |
+| dynamic categorical | `transaction`/`session` | `A.v2.transaction.transaction_type` | `==`, `!=` |
+| dynamic numeric | `transaction`/`session` | `B.v2.session.fraud_probability_score` | `<=`, `>=`, `<`, `>` |
 
 ### Window Aggregation Expression Format
 
-```
-<field>_<winType>_<agg>_<windowTime>_<subIntervalTime>
+Window CONDITION nodes use a **structured object**. Sub-interval is omitted.
+
+```json
+{
+  "type": "CONDITION",
+  "expression": {
+    "field": "A.v2.transaction.daily_spend_total_vnd",
+    "agg": "sum",
+    "window": { "type": "tumbling", "time": "10m" },
+    "op": ">=",
+    "threshold": 50000000.00
+  }
+}
 ```
 
-- **windowTime**: duration in minutes, one of `2m, 5m, 10m, 15m, 20m, 25m, 30m`
-- **subIntervalTime**: whole-minute value strictly less than windowTime
-  - **tumbling** — bucket; must evenly divide windowTime (`windowMin % bucketMin == 0`)
-  - **sliding**  — slide step; any value in `[1, windowTime - 1]`
-
-Examples:
-```
-daily_spend_total_vnd_tumbling_sum_10m_2m  >= 50000000.00
-fraud_probability_score_sliding_count_5m_1m > 3.00
-transfer_amount_today_vnd_tumbling_avg_30m_5m < 75000000.00
-```
+- **window.time**: one of `"2m"`, `"5m"`, `"10m"`, `"15m"`, `"20m"`, `"25m"`, `"30m"`
+- **window.type**: `"tumbling"` or `"sliding"`
 
 ### Expression Types
 
-| # | Builder | Field pool | Operators | Notes |
-|---|---|---|---|---|
-| 0 | `buildCategoricalExpr` | static categorical | `==`, `!=` | Always `_current` suffix |
-| 1 | `buildRawNumericExpr` | static + dynamic numeric | static: all 6 ops; dynamic: inequalities only | Static gets `_current` suffix |
-| 2 | `buildWindowAggExpr` | dynamic numeric | `<=`, `>=`, `<`, `>` | Threshold derived from expected event count |
-| 3 | `buildLinearCombinationExpr` | static + dynamic numeric | `<=`, `>=`, `<`, `>` | `(f1 * 0.7 + f2 * 0.3) op threshold` |
+| # | Builder | Field pool | Output type |
+|---|---|---|---|
+| 0 | `buildCategoricalExpr` | `profile` static categorical | String — `path == 'VALUE'` |
+| 1 | `buildRawNumericExpr` | `profile` static numeric + dynamic numeric | String |
+| 2 | `buildWindowAggExprMap` | dynamic numeric | Object (see above) |
+| 3 | `buildLinearCombinationExpr` | **dynamic numeric only** | String (raw) or Object (windowed) — 50/50 |
 
-### Dynamic Categorical Rule
-
-Dynamic categorical fields (`transaction_type`, `card_status`, etc.) are event-level enum attributes
-that carry no meaning on their own as a standalone condition. They are always emitted as an
-**AND node** pairing a categorical filter with a window aggregation:
+### Dynamic Categorical AND Pair (~20% of leaf positions)
 
 ```json
 {
   "type": "AND",
   "children": [
-    { "type": "CONDITION", "expression": "transaction_type == 'TRANSFER'" },
-    { "type": "CONDITION", "expression": "transfer_amount_today_vnd_sliding_sum_10m_2m >= 50000000.00" }
+    { "type": "CONDITION", "expression": "A.v2.transaction.transaction_type == 'TRANSFER'" },
+    { "type": "CONDITION", "expression": {
+        "field": "A.v2.transaction.transfer_amount_today_vnd",
+        "agg": "sum",
+        "window": { "type": "sliding", "time": "10m" },
+        "op": ">=", "threshold": 50000000.00
+    }}
   ]
 }
 ```
-
-~20% of leaf positions in the tree are replaced with this AND pair (`buildDynCatPairNode`).
-
-### Field Naming Rules
-
-| Field category | Expression reference | Operators |
-|---|---|---|
-| static categorical | `<field>_current` | `==`, `!=` |
-| static numeric | `<field>_current` | `==`, `!=`, `<=`, `>=`, `<`, `>` |
-| dynamic numeric | `<field>` (raw name) | `<=`, `>=`, `<`, `>` |
-| dynamic categorical | `<field>` — only inside AND pair | `==`, `!=` |
 
 ## Config
 
@@ -177,3 +217,4 @@ that carry no meaning on their own as a standalone condition. They are always em
 | `skewIdCount` | `5` | code constant |
 | `skewPctPerSkewId` | `10.0` | code constant — 5 × 10% = 50% total skew |
 | `totalRules` | `1000` | code constant (rule_gen only) |
+| `maxUserId` | `20` | code constant (rule_gen only) — upper bound for random user_id |
