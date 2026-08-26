@@ -68,8 +68,10 @@ public class DataGenerator {
                 Map<String, Object> event = generateEvent(entityId, source, random, version);
                 String jsonStr = objectMapper.writeValueAsString(event);
 
+                int salt = random.nextInt(1001);
+                String saltedKey = "ID_" + entityId + "_" + salt;
                 Map<String, String> headers = Map.of("version", version, "source", source);
-                kafkaClient.sendWithHeader(kafkaTopic, "ID_" + entityId, jsonStr, headers);
+                kafkaClient.sendWithHeader(kafkaTopic, saltedKey, jsonStr, headers);
             } catch (Exception e) {
                 e.printStackTrace();
             }

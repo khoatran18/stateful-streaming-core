@@ -79,6 +79,7 @@ Headers on Kafka messages: `version: v2`, `source: A|B`.
 - `BOOLEAN` → `true` or `false`.
 - Static fields: Seeded `Random(entityId * 31L)` (deterministic per customer ID).
 - Dynamic fields: Global unseeded `Random`.
+- **Kafka Partition Key**: Salted key `ID_{entityId}_{salt}` (`salt` random 0..1000) to distribute traffic across partitions under data skew, while keeping `metadata.customer_id` as `ID_{entityId}`.
 
 ### Event JSON Example (Schema A)
 ```json
