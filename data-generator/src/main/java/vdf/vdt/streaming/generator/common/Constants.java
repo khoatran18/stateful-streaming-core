@@ -21,8 +21,8 @@ public class Constants {
 
     public static final int TOTAL_FIELDS = 200;
 
-    public static final int SCHEMA_A_TOTAL_FIELDS = 34;
-    public static final int SCHEMA_B_TOTAL_FIELDS = 34;
+    public static final int SCHEMA_A_TOTAL_FIELDS = 36;
+    public static final int SCHEMA_B_TOTAL_FIELDS = 36;
 
     // ══════════════════════════════════════════════════════════════════════════
     // 1. STATIC CATEGORICAL  (20 fields, ratio = 1)
@@ -462,7 +462,10 @@ public class Constants {
             FieldDefinition.ofFloatRange("total_outstanding_debt_vnd",           0.0, 10_000_000_000.0),
             FieldDefinition.ofIntRange("online_transfers_today",                  0,     30),
             FieldDefinition.ofIntRange("failed_transactions_count_today",         0,     20),
-            FieldDefinition.ofIntRange("successful_transactions_count_today",     0,     100)
+            FieldDefinition.ofIntRange("successful_transactions_count_today",     0,     100),
+            // LONG and DOUBLE fields — demonstrate distinct type handling (IN/NOT IN for LONG; BETWEEN only for DOUBLE)
+            FieldDefinition.ofLongRange("total_transaction_count_lifetime",        0L,    1_000_000L),
+            FieldDefinition.ofDoubleRange("average_transaction_amount_vnd",        0.0,   50_000_000.0)
     ).map(fd -> fd.withCategory("dynamic_numeric")).toList();
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -525,7 +528,10 @@ public class Constants {
             FieldDefinition.ofIntRange("products_viewed_session",             0,     50),
             FieldDefinition.ofIntRange("app_session_count_today",             0,     30),
             FieldDefinition.ofIntRange("offers_clicked_today",                0,     20),
-            FieldDefinition.ofIntRange("notifications_received_today",        0,     50)
+            FieldDefinition.ofIntRange("notifications_received_today",        0,     50),
+            // LONG and DOUBLE fields — demonstrate distinct type handling (IN/NOT IN for LONG; BETWEEN only for DOUBLE)
+            FieldDefinition.ofLongRange("total_login_count_lifetime",          0L,    500_000L),
+            FieldDefinition.ofDoubleRange("average_session_duration_seconds",  0.0,   3_600.0)
     ).map(fd -> fd.withCategory("dynamic_numeric")).toList();
 
     // ══════════════════════════════════════════════════════════════════════════

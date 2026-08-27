@@ -26,9 +26,10 @@ public class DataGenerator {
     private final KafkaProducerClient kafkaClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    // Timestamp formatter for metadata — ISO-8601 with zone offset (e.g. "2026-08-24T09:55:05+07:00").
+    // Timestamp formatter for metadata — ISO-8601 with milliseconds and zone offset
+    // (e.g. "2026-08-24T09:55:05.123+07:00").
     private static final DateTimeFormatter TIMESTAMP_FMT =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssxxx");
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSxxx");
 
     public DataGenerator(KafkaProducerClient kafkaClient) {
         this.kafkaClient = kafkaClient;
@@ -207,12 +208,14 @@ public class DataGenerator {
         return event;
     }
 
-    // Generates a valid value for a field based on its constraint.
+    // Generates a valid value for a field based on its constraint kind and type.
     //   ENUM      -> random pick from enum_values
-    //   TIMESTAMP -> random ISO-8601 string within [minEpoch, maxEpoch]
+    //   TIMESTAMP -> random ISO-8601 string with milliseconds within [minEpoch, maxEpoch] at UTC+7
     //   BOOLEAN   -> random boolean (true/false)
     //   INT       -> random integer in [min, max]
-    //   FLOAT     -> random double in [min, max)
+    //   LONG      -> random long in [min, max] (range fits within double precision)
+    //   FLOAT     -> random double in [min, max) rounded to 2 decimal places
+    //   DOUBLE    -> same as FLOAT (distinct semantic type; same generation logic)
     private Object generateFieldValue(FieldDefinition fd, Random random) {
         if ("ENUM".equals(fd.getConstraintKind())) {
             List<String> values = fd.getEnumValues();
@@ -226,22 +229,26 @@ public class DataGenerator {
         if ("TIMESTAMP".equals(fd.getType())) {
             long minEpoch = fd.getMinValue().longValue();
             long maxEpoch = fd.getMaxValue().longValue();
-            long randomEpoch = minEpoch + (long) (random.nextDouble() * (maxEpoch - minEpoch));
-            return OffsetDateTime.ofInstant(
-                    java.time.Instant.ofEpochSecond(randomEpoch),
-                    java.time.ZoneId.systemDefault()
-            ).format(TIMESTAMP_FMT);
+            long epoch = minEpoch + (long)(random.nextDouble() * (maxEpoch - minEpoch));
+            return java.time.Instant.ofEpochSecond(epoch)
+                    .atOffset(java.time.ZoneOffset.ofHours(7))
+                    .format(TIMESTAMP_FMT);
         }
 
         double min = fd.getMinValue();
         double max = fd.getMaxValue();
 
         if ("INT".equals(fd.getType())) {
-            int intMin = (int) min;
-            int intMax = (int) max;
-            return random.nextInt(intMax - intMin + 1) + intMin;
-        } else {
-            return min + (max - min) * random.nextDouble();
+            return (int) min + random.nextInt((int)(max - min) + 1);
         }
+
+        if ("LONG".equals(fd.getType())) {
+            // long range fits safely in double precision for the field ranges in Constants.
+            return Math.round(min + (max - min) * random.nextDouble());
+        }
+
+        // FLOAT and DOUBLE — two decimal places for readability.
+        double raw = min + (max - min) * random.nextDouble();
+        return Double.parseDouble(String.format(java.util.Locale.US, "%.2f", raw));
     }
 }

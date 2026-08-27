@@ -25,7 +25,7 @@ public class FieldDefinition {
     @JsonProperty("name")
     private String name;
 
-    // "STRING", "INT", "FLOAT", "TIMESTAMP", or "BOOLEAN".
+    // "STRING", "INT", "LONG", "FLOAT", "DOUBLE", "TIMESTAMP", or "BOOLEAN".
     // STRING pairs with constraintKind ENUM.
     // INT/FLOAT pair with constraintKind RANGE.
     // TIMESTAMP pairs with constraintKind TIMESTAMP; minValue/maxValue are epoch-seconds.
@@ -81,6 +81,30 @@ public class FieldDefinition {
         FieldDefinition fd = new FieldDefinition();
         fd.name           = name;
         fd.type           = "FLOAT";
+        fd.constraintKind = "RANGE";
+        fd.minValue       = min;
+        fd.maxValue       = max;
+        return fd;
+    }
+
+    // Creates a LONG field. Semantically equivalent to ofIntRange but uses Java long.
+    // Supports the same operators as INT: ==, !=, >, <, >=, <=, BETWEEN, IN, NOT IN.
+    public static FieldDefinition ofLongRange(String name, long min, long max) {
+        FieldDefinition fd = new FieldDefinition();
+        fd.name           = name;
+        fd.type           = "LONG";
+        fd.constraintKind = "RANGE";
+        fd.minValue       = (double) min;
+        fd.maxValue       = (double) max;
+        return fd;
+    }
+
+    // Creates a DOUBLE field. Same precision as FLOAT in JSON output but distinct type.
+    // Supports: ==, !=, >, <, >=, <=, BETWEEN (no IN/NOT IN per DATA_TYPE.md).
+    public static FieldDefinition ofDoubleRange(String name, double min, double max) {
+        FieldDefinition fd = new FieldDefinition();
+        fd.name           = name;
+        fd.type           = "DOUBLE";
         fd.constraintKind = "RANGE";
         fd.minValue       = min;
         fd.maxValue       = max;

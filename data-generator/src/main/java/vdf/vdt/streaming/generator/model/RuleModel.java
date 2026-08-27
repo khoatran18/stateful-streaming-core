@@ -15,8 +15,9 @@ public class RuleModel {
     @JsonProperty("metadata")
     private RuleMetadata metadata;
 
+    // Array of source-version entries; one rule can be triggered by events from multiple sources.
     @JsonProperty("trigger_criteria")
-    private TriggerCriteria triggerCriteria;
+    private List<TriggerCriteria> triggerCriteria;
 
     @JsonProperty("condition_tree")
     private RuleNode conditionTree;
@@ -31,8 +32,8 @@ public class RuleModel {
     public RuleMetadata getMetadata() { return metadata; }
     public void setMetadata(RuleMetadata metadata) { this.metadata = metadata; }
 
-    public TriggerCriteria getTriggerCriteria() { return triggerCriteria; }
-    public void setTriggerCriteria(TriggerCriteria triggerCriteria) { this.triggerCriteria = triggerCriteria; }
+    public List<TriggerCriteria> getTriggerCriteria() { return triggerCriteria; }
+    public void setTriggerCriteria(List<TriggerCriteria> triggerCriteria) { this.triggerCriteria = triggerCriteria; }
 
     public RuleNode getConditionTree() { return conditionTree; }
     public void setConditionTree(RuleNode conditionTree) { this.conditionTree = conditionTree; }

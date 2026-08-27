@@ -9,7 +9,7 @@ Generates synthetic CDP streaming events and hierarchical condition-tree rules t
 ```text
 generator/
 ├── common/
-│   ├── Constants.java             # field lists: 200-field legacy + Schema A/B (34 each)
+│   ├── Constants.java             # field lists: 200-field legacy + Schema A/B (36 each)
 │   ├── KafkaProducerClient.java   # send() and sendWithHeader()
 │   └── PathUtils.java             # output path resolution
 ├── data_gen/
@@ -19,22 +19,22 @@ generator/
 │   └── Main.java
 ├── model/
 │   ├── FieldDefinition.java       # name, type, category (constraint fields internal-only)
-│   ├── RuleModel.java             # rule_id, schema_fields_count, metadata, trigger_criteria, condition_tree (AST)
+│   ├── RuleModel.java             # rule_id, schema_fields_count, metadata, trigger_criteria[], condition_tree (AST)
 │   └── SchemaDefinition.java      # lightweight wrapper: totalFields + column name lists
 └── rule_gen/
-    ├── RuleGenerator.java         # AST rule generator (depth 1-2, trigger criteria, dual 34-field schema)
+    ├── RuleGenerator.java         # AST rule generator (depth 1-2, multi-source trigger_criteria, dual 36-field schema)
     └── Main.java
 ```
 
 Output paths:
 - Rules: `data/rules/<totalRules>/<timestamp>.json`
-- Schemas: `data/schema/34/<version>/<timestamp>/schema_a.json` & `schema_b.json`
+- Schemas: `data/schema/36/<version>/<timestamp>/schema_a.json` & `schema_b.json`
 
 ---
 
-## Dual Schema — 34 Leaf Fields Each
+## Dual Schema — 36 Leaf Fields Each
 
-Data types: `STRING`, `INT`, `FLOAT`, `TIMESTAMP`, `BOOLEAN`.  
+Data types: `STRING`, `INT`, `LONG`, `FLOAT`, `DOUBLE`, `TIMESTAMP`, `BOOLEAN`.
 Categories: `static_categorical`, `static_numeric`, `dynamic_categorical`, `dynamic_numeric`.
 
 ### Structure & Layout
@@ -49,9 +49,9 @@ The `structure` field mirrors event JSON 100%. Every leaf field specifies `type`
 
 ```json
 {
-  "metadata": { "schema_version": "v2", "source": "A", "timestamp": "2026-08-24T14:45:00+07:00" },
+  "metadata": { "schema_version": "v2", "source": "A", "timestamp": "2026-08-24T14:45:00.000+07:00" },
   "key_field": "customer_id",
-  "total_fields": 34,
+  "total_fields": 36,
   "structure": {
     "metadata": {
       "customer_id": { "type": "STRING", "category": "static_categorical" },
@@ -59,6 +59,8 @@ The `structure` field mirrors event JSON 100%. Every leaf field specifies `type`
     },
     "customer_segment": { "type": "STRING", "category": "static_categorical" },
     "age": { "type": "INT", "category": "static_numeric" },
+    "total_transaction_count_lifetime": { "type": "LONG", "category": "dynamic_numeric" },
+    "average_transaction_amount_vnd": { "type": "DOUBLE", "category": "dynamic_numeric" },
     "debt": {
       "loan_repayment_status": { "type": "STRING", "category": "dynamic_categorical" },
       "transfer_amount_today_vnd": { "type": "FLOAT", "category": "dynamic_numeric" }
@@ -74,8 +76,8 @@ Headers on Kafka messages: `version: v2`, `source: A|B`.
 ## Data Generation
 
 - `ENUM` → random pick from `enumValues`.
-- `RANGE` (`INT`/`FLOAT`) → random in `[minValue, maxValue]`.
-- `TIMESTAMP` → ISO-8601 string within range.
+- `RANGE` (`INT`/`LONG`/`FLOAT`/`DOUBLE`) → random in `[minValue, maxValue]`.
+- `TIMESTAMP` → ISO-8601 string with millisecond precision within range.
 - `BOOLEAN` → `true` or `false`.
 - Static fields: Seeded `Random(entityId * 31L)` (deterministic per customer ID).
 - Dynamic fields: Global unseeded `Random`.
@@ -88,11 +90,13 @@ Headers on Kafka messages: `version: v2`, `source: A|B`.
     "customer_id": "ID_42",
     "schema_version": "v2",
     "source": "A",
-    "event_time": "2026-08-24T14:45:00+07:00"
+    "event_time": "2026-08-24T14:45:00.123+07:00"
   },
   "customer_segment": "PREMIUM",
   "age": 35,
   "is_vip_member": true,
+  "total_transaction_count_lifetime": 12450,
+  "average_transaction_amount_vnd": 1850000.00,
   "debt": {
     "loan_repayment_status": "ON_TIME",
     "transfer_amount_today_vnd": 1500000.0,
@@ -106,45 +110,125 @@ Headers on Kafka messages: `version: v2`, `source: A|B`.
 
 ## Rule Generation
 
-Rules contain `metadata`, pre-filter `trigger_criteria`, and a `condition_tree` (depth 1–2).
+Rules contain `metadata`, pre-filter `trigger_criteria` (array), and a `condition_tree` (depth 1-2).
 
-### Rule Structure Example
+### Operator Coverage (per DATA_TYPE.md)
+
+| Type | Operators | rhs variants |
+|---|---|---|
+| INT / LONG | `==`, `!=`, `>`, `<`, `>=`, `<=`, `BETWEEN`, `IN`, `NOT IN` | literal, `right_field` |
+| FLOAT / DOUBLE | `==`, `!=`, `>`, `<`, `>=`, `<=`, `BETWEEN` | literal, `right_field` |
+| STRING | `==`, `!=`, `IN`, `NOT IN` | literal, `right_field` |
+| BOOLEAN | `==`, `!=` | literal, `right_field` |
+| TIMESTAMP | `==`, `!=`, `>`, `<`, `>=`, `<=`, `BETWEEN` | ISO-8601 literal, `right_field` |
+
+For `IN`, `NOT IN`, `BETWEEN`: rhs is always a literal list (no `right_field` inside list ops).
+
+### Window Format
+
+```json
+// Tumbling window
+{ "type": "tumbling", "duration": "1h" }
+
+// Sliding window
+{ "type": "sliding", "duration": "20m", "slide": "5m" }
+```
+
+The optional `filter` field sits **at the same level as `field` and `agg`**, not inside `window`:
+
 ```json
 {
-  "rule_id": "rule_A_0",
-  "schema_fields_count": 34,
-  "metadata": { "event_time": "2026-08-24T15:08:00+07:00", "user_id": "user_005" },
-  "trigger_criteria": {
-    "source": "A",
-    "version": "v2",
-    "conditions": [
-      { "field": "customer_segment", "op": "IN", "value": ["PREMIUM", "VIP"] },
-      { "field": "debt.loan_repayment_status", "op": "!=", "value": "NO_LOAN" }
-    ]
+  "field": "A.v2.daily_spend_total_vnd",
+  "agg": "sum",
+  "filter": { "field": "transaction_type", "op": "IN", "value": ["TRANSFER", "PAYMENT"] },
+  "window": { "type": "sliding", "duration": "20m", "slide": "5m" },
+  "op": ">=",
+  "threshold": 50000000.00
+}
+```
+
+### Rule Structure Example
+
+```json
+{
+  "rule_id": "rule_B_54",
+  "schema_fields_count": 36,
+  "metadata": {
+    "event_time": "2026-08-24T16:02:37.123+07:00",
+    "user_id": "user_001"
   },
-  "condition_tree": {
-    "type": "CONDITION",
-    "expression": {
-      "field": "A.v2.debt.transfer_amount_today_vnd",
-      "agg": "sum",
-      "window": { "type": "tumbling", "time": "10m" },
-      "op": ">=", "threshold": 50000000.00
+  "trigger_criteria": [
+    {
+      "source": "B",
+      "version": "v2",
+      "conditions": [
+        { "field": "nps_score_baseline", "op": "BETWEEN", "value": [3, 8] },
+        { "field": "device_type", "op": "NOT IN", "value": ["DESKTOP"] },
+        { "field": "total_login_count_lifetime", "op": ">=", "value": 500 }
+      ]
+    },
+    {
+      "source": "A",
+      "version": "v1",
+      "conditions": [
+        { "field": "customer_segment", "op": "IN", "value": ["PREMIUM", "VIP"] }
+      ]
     }
+  ],
+  "condition_tree": {
+    "type": "OR",
+    "children": [
+      {
+        "type": "CONDITION",
+        "expression": {
+          "field": "B.v2.risk_signals.fraud_probability_score",
+          "agg": "avg",
+          "filter": { "field": "device_type", "op": "==", "value": "TABLET" },
+          "window": { "type": "sliding", "duration": "20m", "slide": "5m" },
+          "op": "<=",
+          "threshold": 40.13
+        }
+      },
+      {
+        "type": "CONDITION",
+        "expression": {
+          "field": "B.v2.last_login_time",
+          "op": "BETWEEN",
+          "value": ["2026-08-01T00:00:00.000+07:00", "2026-08-24T23:59:59.000+07:00"]
+        }
+      },
+      {
+        "type": "CONDITION",
+        "expression": {
+          "field": "B.v2.total_login_count_lifetime",
+          "op": "IN",
+          "value": [100, 500, 1000]
+        }
+      },
+      {
+        "type": "CONDITION",
+        "expression": {
+          "expr": "B.v2.pages_viewed_session - B.v2.products_viewed_session",
+          "op": ">=",
+          "right_field": "B.v2.app_session_count_today"
+        }
+      }
+    ]
   }
 }
 ```
 
-### Path Notation & Source Resolution
-- **`trigger_criteria.conditions`**: Local field paths (e.g. `customer_segment` or `debt.loan_repayment_status`) omitting `{source}.v2.` prefix since source & version are top-level fields.
-- **`condition_tree`**: Full dot paths (`{source}.v2.{field}` or `{source}.v2.{group}.{field}`). Nodes can target source A or B independently of `trigger_criteria.source`.
+### Expression Types in condition_tree
 
-### Expression Types & Operators
-- **Operators**: `==`, `!=`, `<`, `>`, `<=`, `>=`, `IN`. (`IN` supported for static/dynamic categorical and static numeric).
-- **Categorical**: `A.v2.customer_segment IN ['PREMIUM', 'VIP']`
-- **Numeric**: `A.v2.age IN [25, 30, 35]`, `B.v2.risk_signals.fraud_probability_score > 75.0`
-- **Boolean**: `A.v2.is_vip_member == true`, `B.v2.risk_signals.is_suspicious_ip == true`
-- **Window Aggregation**: Structured object (`field`, `agg`, `window` `{ type, time }`, `op`, `threshold`)
-- **Linear Combination**: `(A.v2.daily_spend_total_vnd * 0.65 + A.v2.debt.transfer_amount_today_vnd * 0.35) >= 50000000.00` (dynamic numeric fields with matching ranges, randomized weights $w_1 + w_2 = 1.0$).
+| # | Builder | Description |
+|---|---|---|
+| 0 | Categorical | STRING `==`/`!=`/`IN`/`NOT IN`; rhs: literal or `right_field` |
+| 1 | Numeric | INT/LONG/FLOAT/DOUBLE; all ops per type; rhs: literal, `right_field`, or structured Map |
+| 2 | Window agg | `SUM`/`AVG`/`MAX`/`MIN`/`COUNT`; tumbling or sliding; optional `filter` |
+| 3 | Boolean | `==`/`!=`; rhs: literal or `right_field` |
+| 4 | Linear combination | Weighted sum formula; raw string or windowed Map with `expr` key |
+| 5 | Timestamp | `==`/`!=`/`>`/`<`/`>=`/`<=`/`BETWEEN`; rhs: ISO-8601 literal or `right_field` |
+| 6 | Expr-lhs | Arithmetic expr as lhs; rhs: `value`, `right_field`, or `right_expr` |
 
 ---
 

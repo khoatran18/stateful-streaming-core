@@ -24,8 +24,8 @@ import java.util.Set;
 //      and "<version>:B". Each message body contains "version" and "source" so consumers
 //      are self-describing. Headers carry the same fields for compact routing.
 //   2. Local files at:
-//        data/schema/30/<version>/<timestamp>/schema_a.json
-//        data/schema/30/<version>/<timestamp>/schema_b.json
+//        data/schema/36/<version>/<timestamp>/schema_a.json
+//        data/schema/36/<version>/<timestamp>/schema_b.json
 //      The timestamp folder groups both files from the same publish run together.
 public class SchemaPublisher {
 
@@ -84,7 +84,9 @@ public class SchemaPublisher {
         Map<String, Object> schemaMeta = new LinkedHashMap<>();
         schemaMeta.put("schema_version", version);
         schemaMeta.put("source",         source);
-        schemaMeta.put("timestamp",      OffsetDateTime.now().format(TIMESTAMP_FMT));
+        // ISO-8601 with milliseconds, consistent with DataGenerator event timestamps.
+        schemaMeta.put("timestamp",      OffsetDateTime.now()
+                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSxxx")));
 
         boolean isA = "A".equals(source);
 

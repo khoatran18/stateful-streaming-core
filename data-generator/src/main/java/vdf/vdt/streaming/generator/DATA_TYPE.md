@@ -29,13 +29,13 @@ Hỗ trợ 5 hàm tổng hợp cửa sổ: `SUM`, `AVG`, `MAX`, `MIN`, `COUNT`.
 * **Quy định tính toán:**
     * Các hàm `SUM`, `AVG`, `MAX`, `MIN` chỉ áp dụng tính toán cho trường kiểu `INT`, `LONG`, `FLOAT`, `DOUBLE` hoặc biểu thức tuyến tính (`Expr`).
     * Hàm `COUNT` dùng để đếm tần suất xuất hiện bản ghi thỏa mãn điều kiện.
-* **Bộ lọc điều kiện (`filter`):** Cho phép gắn trực tiếp điều kiện lọc vào bên trong cửa sổ để tính toán có chọn lọc trên dữ liệu quá khứ (ví dụ: chỉ tính trung bình hoặc đếm khi giao dịch được thực hiện qua kênh cụ thể).
+* **Bộ lọc điều kiện (`filter`):** **Bắt buộc** — mọi biểu thức cửa sổ đều phải kèm điều kiện lọc trực tiếp để tính toán có chọn lọc trên dữ liệu quá khứ (ví dụ: chỉ tính trung bình hoặc đếm khi giao dịch được thực hiện qua kênh cụ thể). `filter` là một object độc lập ngang hàng với `field`/`agg`, **không** nằm bên trong `window`.
 
 #### Cấu trúc JSON Rule hoàn chỉnh (kèm `filter` trong Window):
 ```text
 {
   "rule_id": "rule_B_54",
-  "schema_fields_count": 34,
+  "schema_fields_count": 36,
   "metadata": {
     "event_time": "2026-08-24T16:02:37.123+07:00",
     "user_id": "user_001"
@@ -99,8 +99,13 @@ Hỗ trợ 5 hàm tổng hợp cửa sổ: `SUM`, `AVG`, `MAX`, `MIN`, `COUNT`.
       {
         "type": "CONDITION",
         "expression": {
-          "field": "A.v1.transaction_amount",                      // Cửa sổ nhảy (Tumbling Window)
+          "field": "A.v2.daily_spend_total_vnd",                    // Cửa sổ nhảy (Tumbling Window)
           "agg": "sum",
+          "filter": {
+            "field": "transaction_type",
+            "op": "NOT IN",
+            "value": ["REFUND", "REVERSAL"]
+          },
           "window": {
             "type": "tumbling",
             "duration": "1h"

@@ -21,7 +21,7 @@ public class Main {
         System.out.println("Base path: " + basePath);
         String basePathString = basePath.toString();
 
-        DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
+        DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss-SSS");
         String timeString = dtf.format(LocalDateTime.now());
 
         // Eg: rules_output/100/2026-06-07_14-30-15.json
