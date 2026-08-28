@@ -22,10 +22,11 @@ Hỗ trợ 5 hàm tổng hợp cửa sổ: `SUM`, `AVG`, `MAX`, `MIN`, `COUNT`.
     * **`sliding window`:** Cấu hình bao gồm khoảng thời gian hiệu lực `duration` và chu kỳ trượt `slide` (ví dụ: `"duration": "20m"`, `"slide": "5m"`).
     * **`tumbling window`:** Cấu hình chỉ bao gồm khoảng thời gian hiệu lực `duration` (ví dụ: `"duration": "1h"`).
     * **Lưu ý:** `duration` và `slide` bắt buộc phải chia hết cho độ dài của một bucket trong kiến trúc Ring Buffer của hệ thống (thời gian bucket cụ thể sẽ được cấu hình sau).
-* **Bộ lọc kích hoạt kiểm tra rule (`trigger_criteria`):**
-    * Cấu trúc dạng mảng (`Array`) chứa các đối tượng nguồn dữ liệu: `[{ "source": "...", "version": "...", "conditions": [...] }]`.
-    * Hỗ trợ đa nguồn (Multi-source): Cho phép một rule được kích hoạt bởi các event đến từ nhiều nguồn/phiên bản khác nhau.
-    * Tối ưu tra cứu: Khai báo `source`, `version` thành các trường riêng biệt (thay vì viết dưới dạng chuỗi ghép `source.version.field` như trong `condition_tree`) giúp hệ thống khi nhận event có thể định tuyến và lọc tức thì các điều kiện tương ứng với đúng cặp `(source, version)` đó mà không cần parse/tách chuỗi.
+    * **Trường thời gian:** Khi sử dụng `window`, hệ thống mặc định sử dụng trường `event_time` trong phần `metadata` của bản tin event để xác định mốc thời gian tính toán cửa sổ.
+* **Bộ lọc kích hoạt (`trigger_criteria`):**
+    * Cấu trúc dạng mảng: `[{ "source": "...", "version": "...", "conditions": [ [cond1, cond2], [cond3] ] }]`.
+    * **Đa nguồn (Multi-source):** Khai báo `source` và `version` riêng giúp định tuyến và lọc dữ liệu nhanh theo từng loại event.
+    * **Cấu trúc `conditions` (Mảng 2 chiều):** Là danh sách các list điều kiện. Chỉ cần thỏa mãn **toàn bộ phần tử trong 1 list điều kiện** là pass trigger.
 * **Quy định tính toán:**
     * Các hàm `SUM`, `AVG`, `MAX`, `MIN` chỉ áp dụng tính toán cho trường kiểu `INT`, `LONG`, `FLOAT`, `DOUBLE` hoặc biểu thức tuyến tính (`Expr`).
     * Hàm `COUNT` dùng để đếm tần suất xuất hiện bản ghi thỏa mãn điều kiện.
@@ -38,39 +39,50 @@ Hỗ trợ 5 hàm tổng hợp cửa sổ: `SUM`, `AVG`, `MAX`, `MIN`, `COUNT`.
   "schema_fields_count": 36,
   "metadata": {
     "event_time": "2026-08-24T16:02:37.123+07:00",
-    "user_id": "user_001"
+    "customer_id": "customer_001"
   },
   "trigger_criteria": [
     {
       "source": "B",
       "version": "v2",
       "conditions": [
-        {
-          "field": "nps_score_baseline",
-          "op": "IN",
-          "value": [7, 3]
-        },
-        {
-          "field": "device_type",
-          "op": "==",
-          "value": "TABLET"
-        },
-        {
-          "field": "financial_literacy_score",
-          "op": "<",
-          "value": 26
-        }
+        [                                                           // Bộ điều kiện 1 (AND)
+          {
+            "field": "nps_score_baseline",
+            "op": "IN",
+            "value": [7, 3]
+          },
+          {
+            "field": "device_type",
+            "op": "==",
+            "value": "TABLET"
+          },
+          {
+            "field": "financial_literacy_score",
+            "op": "<",
+            "value": 26
+          }
+        ],
+        [                                                           // Bộ điều kiện 2 (OR với bộ 1)
+          {
+            "field": "is_vip",
+            "op": "==",
+            "value": true
+          }
+        ]
       ]
     },
     {
       "source": "A",
       "version": "v1",
       "conditions": [
-        {
-          "field": "user_status",
-          "op": "==",
-          "value": "ACTIVE"
-        }
+        [
+          {
+            "field": "user_status",
+            "op": "==",
+            "value": "ACTIVE"
+          }
+        ]
       ]
     }
   ],
