@@ -43,8 +43,8 @@ public class RuleModel {
         @JsonProperty("source")
         private String source;
 
-        @JsonProperty("version")
-        private String version;
+        @JsonProperty("schema_version")
+        private String schemaVersion;
 
         @JsonProperty("conditions")
         private List<TriggerCondition> conditions;
@@ -53,15 +53,15 @@ public class RuleModel {
 
         public TriggerCriteria(String source, String version, List<TriggerCondition> conditions) {
             this.source = source;
-            this.version = version;
+            this.schemaVersion = version;
             this.conditions = conditions;
         }
 
         public String getSource() { return source; }
         public void setSource(String source) { this.source = source; }
 
-        public String getVersion() { return version; }
-        public void setVersion(String version) { this.version = version; }
+        public String getSchemaVersion() { return schemaVersion; }
+        public void setSchemaVersion(String schemaVersion) { this.schemaVersion = schemaVersion; }
 
         public List<TriggerCondition> getConditions() { return conditions; }
         public void setConditions(List<TriggerCondition> conditions) { this.conditions = conditions; }

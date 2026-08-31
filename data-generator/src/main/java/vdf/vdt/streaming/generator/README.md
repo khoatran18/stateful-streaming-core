@@ -160,7 +160,7 @@ The optional `filter` field sits **at the same level as `field` and `agg`**, not
   "trigger_criteria": [
     {
       "source": "B",
-      "version": "v2",
+      "schema_version": "v2",
       "conditions": [
         { "field": "nps_score_baseline", "op": "BETWEEN", "value": [3, 8] },
         { "field": "device_type", "op": "NOT IN", "value": ["DESKTOP"] },
@@ -169,7 +169,7 @@ The optional `filter` field sits **at the same level as `field` and `agg`**, not
     },
     {
       "source": "A",
-      "version": "v1",
+      "schema_version": "v1",
       "conditions": [
         { "field": "customer_segment", "op": "IN", "value": ["PREMIUM", "VIP"] }
       ]

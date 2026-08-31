@@ -21,13 +21,13 @@ import java.util.*;
 // Flow:
 //   Step 1 – Load schema registry from source.schema topic (from earliest).
 //             Key format in topic: "<version>:<source>" (e.g. "v2:A", "v2:B").
-//             Build: Map<"version:source", Map<fieldName, FieldDefinition>>
+//             Build: Map<"schema_version:source", Map<fieldName, FieldDefinition>>
 //
 //   Step 2 – Consume real data events from source.event.
 //             For each record:
-//               a. Read Kafka headers "version" and "source"
+//               a. Read Kafka headers "schema_version" and "source"
 //               b. Parse JSON body -> Map<String, Object>
-//               c. Look up schema by "version:source"
+//               c. Look up schema by "schema_version:source"
 //               d. Validate every field (type + constraint)
 //               e. Print result
 //
@@ -53,7 +53,7 @@ public class SchemaConsumerExample {
     // ═════════════════════════════════════════════════════════════════════════
 
     // Reads all messages from the schema topic (from earliest) and populates schemaRegistry.
-    // With log compaction, each "version:source" key has exactly one message.
+    // With log compaction, each "schema_version:source" key has exactly one message.
     // Call once at startup before consuming data events.
     public void loadSchemasFromKafka() {
         Properties props = new Properties();
@@ -84,7 +84,7 @@ public class SchemaConsumerExample {
             while (!allConsumed) {
                 ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(2));
                 for (ConsumerRecord<String, String> record : records) {
-                    // key = "version:source" (e.g. "v2:A")
+                    // key = "schema_version:source" (e.g. "v2:A")
                     parseAndRegisterSchema(record.key(), record.value());
                 }
                 allConsumed = partitions.stream().allMatch(tp ->
@@ -97,7 +97,7 @@ public class SchemaConsumerExample {
 
     // Parses one schema Kafka message and registers it in the local registry.
     // Expected JSON body:
-    //   { "version": "v2", "source": "A", "total_fields": 30,
+    //   { "schema_version": "v2", "source": "A", "total_fields": 30,
     //     "fields": {
     //       "static_categorical":  [ { "name": "...", "type": "STRING", "constraint_kind": "ENUM",
     //                                  "enum_values": [...] } ],
@@ -110,7 +110,7 @@ public class SchemaConsumerExample {
     private void parseAndRegisterSchema(String key, String jsonBody) {
         try {
             JsonNode root    = mapper.readTree(jsonBody);
-            JsonNode vNode   = root.get("version");
+            JsonNode vNode   = root.get("schema_version");
             JsonNode srcNode = root.get("source");
             JsonNode fNode   = root.get("fields");
 
@@ -156,7 +156,7 @@ public class SchemaConsumerExample {
     // ═════════════════════════════════════════════════════════════════════════
 
     // Validates a parsed data event against the schema for the given version and source.
-    // version - from Kafka header "version" (e.g. "v2")
+    // version - from Kafka header "schema_version" (e.g. "v2")
     // source  - from Kafka header "source" (e.g. "A" or "B")
     // Returns list of validation error messages; empty means valid.
     public List<String> validate(Map<String, Object> event, String version, String source) {
@@ -277,8 +277,8 @@ public class SchemaConsumerExample {
                 for (ConsumerRecord<String, String> record : records) {
                     totalEvents++;
 
-                    // a. Read "version" and "source" from Kafka headers
-                    String version = extractHeader(record, "version");
+                    // a. Read "schema_version" and "source" from Kafka headers
+                    String version = extractHeader(record, "schema_version");
                     String source  = extractHeader(record, "source");
 
                     if (version == null || source == null) {

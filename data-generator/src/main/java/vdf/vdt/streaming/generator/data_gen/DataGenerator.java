@@ -71,7 +71,7 @@ public class DataGenerator {
 
                 int salt = random.nextInt(1001);
                 String saltedKey = "ID_" + entityId + "_" + salt;
-                Map<String, String> headers = Map.of("version", version, "source", source);
+                Map<String, String> headers = Map.of("schema_version", version, "source", source);
                 kafkaClient.sendWithHeader(kafkaTopic, saltedKey, jsonStr, headers);
             } catch (Exception e) {
                 e.printStackTrace();

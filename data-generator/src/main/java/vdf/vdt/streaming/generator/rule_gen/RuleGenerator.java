@@ -119,7 +119,7 @@ public class RuleGenerator {
     private Map<String, Object> buildOneTriggerCriteria(String src, String version) {
         Map<String, Object> trigger = new LinkedHashMap<>();
         trigger.put("source",  src);
-        trigger.put("version", version);
+        trigger.put("schema_version", version);
 
         List<FieldDefinition> pool = new ArrayList<>();
         pool.addAll(staticCatPool(src));

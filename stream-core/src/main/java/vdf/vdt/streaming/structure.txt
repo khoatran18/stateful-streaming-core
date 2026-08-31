@@ -1,30 +1,69 @@
-com.company.realtime.cdp
-│
-├── common              # Các lớp tiện ích chung, hằng số, exception
-│   ├── model           # Các POJO dùng chung (Event, Schema, Rule, AggregationResult)
-│   └── utils           # Thời gian, JSON parser, serialization helpers
-│
-├── schema              # Module quản lý Schema & Dynamic Parsing
-│   ├── parser          # Giải mã sự kiện thô dựa trên schema động (source, version)
-│   └── state           # Broadcast state quản lý schema
-│
-├── aggregation         # Module 1: Xử lý luồng, chống skew & Tổng hợp cửa sổ 2 lớp
-│   ├── skew            # Xử lý 2 lớp: Thêm/xóa salt (_random), gộp kết quả Layer 1 -> Layer 2
-│   ├── window          # Ring buffer, bucket, quản lý MapState chứa POJO (sum, min, max, count, avg)
-│   └── optimizer       # Bộ kiểm tra trường dữ liệu (nếu số luật dùng field = 0 thì loại khỏi state)
-│
-├── indexation          # Module 2: Chỉ mục nghịch đảo & Tối ưu độ chọn lọc
-│   ├── frequency       # Thống kê Document Frequency của các trường
-│   └── inverted        # Dựng bảng tra ngược, thuật toán giao tập ứng viên (Intersection)
-│
-├── evaluation          # Module 3: Bộ máy đánh giá luật (Rule Engine)
-│   ├── expression      # Đánh giá biểu thức tuyến tính, trộn giá trị thô và tổng hợp
-│   ├── tree            # Cây điều kiện AND/OR/NOT có cắt nhánh sớm (Short-circuit)
-│   └── cooldown        # Cơ chế khử trùng kết quả (cooldown) trước khi bắn ra ngoài
-│
-├── sink                # Tầng ghi dữ liệu đích (ClickHouse, Kafka, Log...)
-│   └── batch           # Cơ chế ghi batch có thử lại (retry)
-│
-└── job                 # Định nghĩa các Apache Flink Job (Main class, Topology)
-    ├── TwoLayerPipelineJob.java
-    └── broadcast       # Broadcast ProcessFunction kết hợp schema & rule
+vdf-vdt-streaming/
+├── pom.xml
+├── src/main/resources/
+│   └── config.dev.yml                         # Cấu hình Kafka brokers, topics, app configs
+└── src/main/java/vdf/vdt/streaming/
+    ├── config/
+    │   └── ConfigLoader.java                  # Đọc cấu hình từ file YAML
+    │
+    ├── deserializer/
+    │   ├── KafkaDataDeserializationSchema.java   # Đọc Kafka Header (source, version) + Payload thành RawKafkaEvent
+    │   └── KafkaSchemaDeserializationSchema.java # (Tùy chọn) Đọc Schema payload/header từ topic schema
+    │
+    ├── model/
+    │   ├── event/
+    │   │   ├── RawKafkaEvent.java             # POJO chứa header metadata và raw payload byte[]
+    │   │   └── GenericEvent.java              # POJO chuẩn chứa customer_id, event_time và Map fields đã parse & cast
+    │   └── schema/
+    │       ├── DataType.java                  # Enum: INT, LONG, FLOAT, DOUBLE, STRING, TIMESTAMP, BOOLEAN, OBJECT
+    │       ├── FieldCategory.java             # Enum: dynamic_numeric, static_categorical, dynamic_categorical, static_numeric
+    │       ├── SourceVersionKey.java          # Record: (source, version) làm định danh Schema
+    │       ├── ColumnDefinition.java          # Chi tiết cột (fieldPath, dataType, category)
+    │       └── TableSchema.java               # Lưu trữ schema hoàn chỉnh (Map<String, ColumnDefinition>)
+    │
+    ├── parser/
+    │   ├── event/
+    │   │   └── DynamicEventValidator.java     # Đệ quy parse JSON event và ép kiểu theo TableSchema
+    │   └── schema/
+    │       └── DynamicSchemaJsonParser.java   # Parse JSON từ topic schema thành TableSchema
+    │
+    ├── processor/
+    │   └── DynamicEventBroadcastProcessor.java # BroadcastProcessFunction<RawKafkaEvent, byte[], GenericEvent>
+    │
+    ├── state/
+    │   └── StateDescriptors.java              # Quản lý SCHEMA_BROADCAST_STATE
+    │
+    └── StreamingJob.java                      # Dựng Dataflow: Data Source -> Connect Schema Broadcast -> Parse -> KeyBy
+
+
+[1. Schema Config JSON]
+         │
+         ▼
+[DynamicSchemaJsonParser] ──creates──► [TableSchema] (Chứa Map<String, ColumnDefinition>)
+                                             │
+                                             │ (Lưu vào Schema Registry / Cache / Flink State)
+                                             ▼
+[2. Raw Event JSON] ───────► [DynamicEventValidator]
+                                    │
+                                    ├── Đọc TableSchema để lấy kiểu dữ liệu
+                                    ├── Bóc tách, đệ quy flatten các trường lồng nhau
+                                    └── Ép kiểu theo DataType
+                                    │
+                                    ▼
+                             [GenericEvent] (Đưa vào Engine xử lý luồng)
+
+
+[config-schema-topic] ──► Flink Kafka Source ──► (DynamicSchemaJsonParser) ──► BroadcastStream (MapStateDescriptor)
+                                                                                         │
+                                                                                         ▼ (Broadcast)
+[event-topics (1, 2)] ──► Flink Kafka Source ──► KeyBy (customer/key_field) ──► KeyedBroadcastProcessFunction
+                                                                                         │
+                                                                                         ├── 1. Lookup Schema from State
+                                                                                         ├── 2. DynamicEventValidator
+                                                                                         └── 3. Sink to ClickHouse
+
+
+
+
+
+

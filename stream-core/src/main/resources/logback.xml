@@ -7,7 +7,7 @@
         </encoder>
     </appender>
 
-    <appender name="FILE" class="ch.qos.logback.core.FileHandler">
+    <appender name="FILE" class="ch.qos.logback.core.FileAppender">
         <file>outputs/logs/${bySecond}/system.log</file>
         <append>true</append>
         <encoder>

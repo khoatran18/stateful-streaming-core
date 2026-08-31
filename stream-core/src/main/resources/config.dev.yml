@@ -6,9 +6,9 @@ app:
 kafka:
   bootstrap_servers: "localhost:9092"
   event_topics:
-    - "event-topic-source-1"
-    - "event-topic-source-2"
-  config_topic: "config-schema-topic"
+    - "source.event"
+  schema_topics:
+    - "source.schema"
   group_id: "cdp-flink-group"
 
 database:

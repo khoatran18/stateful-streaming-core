@@ -21,7 +21,7 @@ import java.util.Set;
 
 // Publishes both schema definitions (A and B) on startup to:
 //   1. A dedicated Kafka schema topic — two messages, one per schema, keyed by "<version>:A"
-//      and "<version>:B". Each message body contains "version" and "source" so consumers
+//      and "<version>:B". Each message body contains "schema_version" and "source" so consumers
 //      are self-describing. Headers carry the same fields for compact routing.
 //   2. Local files at:
 //        data/schema/36/<version>/<timestamp>/schema_a.json
@@ -70,7 +70,7 @@ public class SchemaPublisher {
                                 Map<String, Object> schema) throws IOException {
         String jsonBody = jsonMapper.writeValueAsString(schema);
         String key = version + ":" + source;
-        Map<String, String> headers = Map.of("version", version, "source", source);
+        Map<String, String> headers = Map.of("schema_version", version, "source", source);
         kafkaClient.sendWithHeader(schemaTopic, key, jsonBody, headers);
         System.out.println(">>> Published schema [" + key + "] -> topic: " + schemaTopic);
     }
