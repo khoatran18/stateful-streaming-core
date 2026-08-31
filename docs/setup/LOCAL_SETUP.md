@@ -1,22 +1,16 @@
-# Stateful Streaming Core
+# Development & Local Setup Guide
 
-Stateful Streaming Core is a high-performance Apache Flink stream processing framework featuring dynamic rule processing (Broadcast State), ring buffer aggregation, inverted index filtering, and schema management.
-
----
-
-## Development & Local Setup Guide
-
-### 1. Requirements
+## 1. Requirements
 * **JDK**: OpenJDK 21 (Temurin / Corretto / Oracle)
 * **Build Tool**: Apache Maven 3.9+
 * **Stream Platform**: Apache Flink 1.20 / Flink 2.0 & Apache Kafka 3.4+
 
 ---
 
-### 2. IDE Configuration (IntelliJ IDEA)
+## 2. IDE Configuration (IntelliJ IDEA)
 Do Apache Flink sử dụng cơ chế tuần tự hóa Kryo/Chill với các cấu trúc dữ liệu nội bộ của JDK, khi chạy trực tiếp từ IDE trên nền **Java 17+ (Java 21)**, bắt buộc phải cấp quyền truy cập module thông qua **VM Options**:
 
-#### Thiết lập Run Configuration cho `StreamingJob`:
+### Thiết lập Run Configuration cho `StreamingJob`:
 1. Mở **Run** → **Edit Configurations...**
 2. Chọn configuration của **`StreamingJob`** (dưới mục *Application*).
 3. Nhấp vào **Modify options** → Tích chọn **Add VM options** (`Alt + V`).
@@ -32,7 +26,7 @@ Bấm **Apply** → **OK**.
 
 ---
 
-### 3. Build & Package (Production Deployment)
+## 3. Build & Package (Production Deployment)
 Khi đóng gói để deploy lên cụm Flink Cluster phân tán (K8s / Standalone), thực thi lệnh:
 
 ```bash
@@ -45,21 +39,24 @@ Tài liệu tham khảo chính thức: [Apache Flink IDE Setup](https://nightlie
 
 ---
 
-### 4. Local Infrastructure & Kafka Configuration
-Để khởi chạy toàn bộ dịch vụ phụ trợ local (Kafka, Flink, Postgres, MongoDB, Debezium, Kafka UI):
+## 4. Local Infrastructure & Kafka Topics Setup
+Để khởi chạy môi trường hạ tầng local (Kafka, Flink, Postgres, MongoDB, Debezium, Kafka UI):
 
+### Khởi chạy Docker Infrastructure:
 ```bash
 docker compose up -d
 ```
 
-Các Topic Kafka mặc định (được tự động khởi tạo qua `docker/kafka/init_topic.sh`):
+### Các Topic Kafka mặc định:
+Hạ tầng sẽ tự động khởi tạo các Kafka topics sau (thông qua `docker/kafka/init_topic.sh`):
 * `source.event`: Topic nhận dữ liệu stream event đầu vào.
 * `source.rule`: Topic nhận dynamic rules (Broadcast State).
 * `source.schema`: Topic định nghĩa schema (compacted topic).
 * `connect-configs`, `connect-offsets`, `connect-statuses`: Topics dành cho Debezium Kafka Connect.
 
----
-
-## Documentation
-* [Project Overview](docs/PROJECT_OVERVIEW.md)
-* [Local Setup Guide](docs/setup/LOCAL_SETUP.md)
+### Các Cổng Dịch Vụ Local:
+* **Kafka Broker (Host)**: `localhost:9092`
+* **Kafka UI**: `http://localhost:8085`
+* **Flink Web UI**: `http://localhost:8084`
+* **Mongo Express**: `http://localhost:8081`
+* **PostgreSQL**: `localhost:5432` (User: `admin`, DB: `main_db`)

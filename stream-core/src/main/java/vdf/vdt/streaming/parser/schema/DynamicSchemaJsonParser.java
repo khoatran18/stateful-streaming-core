@@ -58,7 +58,7 @@ public class DynamicSchemaJsonParser {
         SourceVersionKey key = SourceVersionKey.of(source, version);
 
         // Extract root-level configurations with sensible fallbacks
-        String keyField = root.path("key_field").asText("customer_id");
+        String keyField = root.path("key_field").asText("metadata.customer_id");
         int totalFields = root.path("total_fields").asInt(0);
 
         // Recursively flatten nested column structures

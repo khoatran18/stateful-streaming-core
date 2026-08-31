@@ -45,17 +45,18 @@ public class DynamicEventValidator {
             throw new IllegalArgumentException("Schema not found for: " + sourceVersionKey);
         }
 
-        String dynamicKeyName = schema.getKeyField();
-
         // 1. Mandatory metadata extraction and validation
         JsonNode metadata = root.path("metadata");
-        String customerId = metadata.path(dynamicKeyName).asText(null);
         String eventTimeStr = metadata.path("event_time").asText(null);
+
+        String keyFieldPath = schema.getKeyField();
+        String customerId = extractFieldByPath(root, keyFieldPath);
 
         // Enforce required primary routing key (customer_id)
         if (customerId == null || customerId.isBlank()) {
-            throw new IllegalArgumentException("Missing required metadata.customer_id");
+            throw new IllegalArgumentException("Missing required key field: " + keyFieldPath);
         }
+
         // Enforce event-time watermark timestamp
         if (eventTimeStr == null || eventTimeStr.isBlank()) {
             throw new IllegalArgumentException("Missing required metadata.event_time");
@@ -65,9 +66,27 @@ public class DynamicEventValidator {
 
         // 2. Recursively flatten nested JSON properties and cast values according to schema
         Map<String, Object> parsedFields = new HashMap<>();
-        flattenAndCast("", root, schema, parsedFields);
+        flattenAndCast("", root, schema, keyFieldPath, parsedFields);
 
         return new GenericEvent(customerId, eventTime, sourceVersionKey, parsedFields);
+    }
+
+    public static String extractFieldByPath(JsonNode root, String dotPath) {
+        if (root == null || dotPath == null || dotPath.isBlank()) {
+            return null;
+        }
+
+        String[] tokens = dotPath.split("\\.");
+        JsonNode currentNode = root;
+
+        for (String token : tokens) {
+            if (currentNode == null || !currentNode.isObject()) {
+                return null;
+            }
+            currentNode = currentNode.path(token);
+        }
+
+        return (currentNode.isMissingNode() || currentNode.isNull()) ? null : currentNode.asText();
     }
 
     /**
@@ -79,7 +98,7 @@ public class DynamicEventValidator {
      * @param schema Target schema used for data type lookups
      * @param output Destination map accumulating flattened field paths and cast values
      */
-    private static void flattenAndCast(String prefix, JsonNode node, TableSchema schema, Map<String, Object> output) {
+    private static void flattenAndCast(String prefix, JsonNode node, TableSchema schema, String keyFieldPath, Map<String, Object> output) {
         if (!node.isObject()) return;
 
         Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
@@ -92,11 +111,11 @@ public class DynamicEventValidator {
             String fullPath = prefix.isEmpty() ? key : prefix + "." + key;
 
             if (valueNode.isObject()) {
-                // Skip the metadata block as it is parsed separately in Step 1
-                if ("metadata".equals(fullPath)) {
+                // Skip the metadata block and key field
+                if ("metadata".equals(fullPath) || fullPath.equals(keyFieldPath)) {
                     continue;
                 }
-                flattenAndCast(fullPath, valueNode, schema, output);
+                flattenAndCast(fullPath, valueNode, schema, keyFieldPath, output);
             } else {
                 ColumnDefinition colDef = schema.getColumn(fullPath);
                 if (colDef != null && !valueNode.isNull()) {

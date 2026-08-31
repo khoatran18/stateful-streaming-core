@@ -159,7 +159,7 @@ public class SchemaPublisher {
 
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("metadata",     schemaMeta);
-        schema.put("key_field",    "customer_id");
+        schema.put("key_field",    "metadata.customer_id");
         schema.put("total_fields", Constants.SCHEMA_A_TOTAL_FIELDS); // same count for both
         schema.put("structure",    structure);
         return schema;
