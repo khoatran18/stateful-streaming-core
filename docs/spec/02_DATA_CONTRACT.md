@@ -39,7 +39,7 @@ Hỗ trợ 5 hàm tổng hợp cửa sổ: `SUM`, `AVG`, `MAX`, `MIN`, `COUNT`.
   "schema_fields_count": 36,
   "metadata": {
     "event_time": "2026-08-24T16:02:37.123+07:00",
-    "customer_id": "customer_001"
+    "user_id" : "user_011"
   },
   "trigger_criteria": [
     {

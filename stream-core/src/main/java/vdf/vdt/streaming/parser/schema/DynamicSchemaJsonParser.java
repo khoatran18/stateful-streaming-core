@@ -2,6 +2,8 @@ package vdf.vdt.streaming.parser.schema;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import vdf.vdt.streaming.model.schema.*;
 
 import java.io.IOException;
@@ -9,76 +11,62 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 
-/**
- * Parser for dynamic JSON schema definitions in streaming pipelines.
- * Deserializes JSON payloads into strongly typed TableSchema instances and
- * flattens nested schema hierarchies into dot-delimited field paths.
- */
+// Parses raw JSON schema definitions (from Kafka bytes or string) into TableSchema objects.
+// Uses DFS to flatten nested column structures into dot-separated field paths
+// (e.g., "risk_signals.fraud_probability_score").
 public class DynamicSchemaJsonParser {
 
-    // Thread-safe reusable Jackson ObjectMapper instance to minimize GC and allocation overhead
+    private static final Logger LOG = LoggerFactory.getLogger(DynamicSchemaJsonParser.class);
+
+    // Shared, thread-safe ObjectMapper (Jackson ObjectMapper is thread-safe after configuration)
     private static final ObjectMapper mapper = new ObjectMapper();
 
-    /**
-     * Parses raw JSON bytes into a TableSchema.
-     *
-     * @param jsonBytes Raw binary payload from Kafka/Storage
-     * @return Fully materialized TableSchema
-     * @throws IOException If parsing fails or payload is malformed
-     */
+    // Parses raw JSON bytes into a TableSchema.
+    // jsonBytes - raw binary payload from Kafka
     public static TableSchema parse(byte[] jsonBytes) throws IOException {
+        LOG.debug("Parsing schema from raw bytes ({} bytes)", jsonBytes.length);
         JsonNode root = mapper.readTree(jsonBytes);
         return parse(root);
     }
 
-    /**
-     * Parses a JSON string into a TableSchema.
-     *
-     * @param jsonString Serialized JSON text
-     * @return Fully materialized TableSchema
-     * @throws IOException If JSON structure is invalid
-     */
+    // Parses a JSON string into a TableSchema.
+    // jsonString - serialized JSON text
     public static TableSchema parse(String jsonString) throws IOException {
+        LOG.debug("Parsing schema from JSON string ({} chars)", jsonString.length());
         JsonNode root = mapper.readTree(jsonString);
         return parse(root);
     }
 
-    /**
-     * Core parsing method that extracts metadata and flattens column structures.
-     *
-     * @param root Root JSON tree node
-     * @return Strongly typed TableSchema object
-     * @throws IOException If required metadata fields or data types cannot be resolved
-     */
+    // Core parsing logic: extracts source/version identity from metadata,
+    // then flattens the "structure" node into a flat ColumnDefinition map.
+    // root - root JSON tree node
     public static TableSchema parse(JsonNode root) throws IOException {
-        // Extract metadata layer (source system and schema version)
+        // Extract schema identity (source system + version)
         JsonNode metadata = root.path("metadata");
         String source = metadata.path("source").asText();
         String version = metadata.path("schema_version").asText();
         SourceVersionKey key = SourceVersionKey.of(source, version);
+        LOG.debug("Parsing schema for key={}", key);
 
-        // Extract root-level configurations with sensible fallbacks
         String keyField = root.path("key_field").asText("metadata.customer_id");
         int totalFields = root.path("total_fields").asInt(0);
 
-        // Recursively flatten nested column structures
+        // Recursively flatten the nested "structure" node into a dot-path column map
         Map<String, ColumnDefinition> columns = new HashMap<>();
         JsonNode structureNode = root.path("structure");
         flattenStructure("", structureNode, columns);
 
+        LOG.info("Schema parsed: key={} keyField='{}' totalFields={} resolvedColumns={}",
+                key, keyField, totalFields, columns.size());
+
         return new TableSchema(key, keyField, totalFields, columns);
     }
 
-    /**
-     * Recursively traverses a nested JSON node tree (DFS) to flatten nested structures
-     * into dot-separated paths (e.g., "risk_signals.fraud_probability_score").
-     *
-     * @param prefix  Current hierarchical path prefix (e.g., "parent.child")
-     * @param node    Current JSON node under inspection
-     * @param columns Accumulator map storing field paths mapped to ColumnDefinition
-     */
+    // Recursively (DFS) traverses a JSON structure node, building dot-separated paths
+    // and registering leaf nodes as ColumnDefinition entries.
+    // A leaf is identified by having both "type" and "category" fields.
+    // prefix - current hierarchical path prefix, node - current node, columns - accumulator map
     public static void flattenStructure(String prefix, JsonNode node, Map<String, ColumnDefinition> columns) {
-        // Guard clause: abort traversal if the node is not a valid JSON object
         if (!node.isObject()) return;
 
         Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
@@ -87,17 +75,17 @@ public class DynamicSchemaJsonParser {
             String fieldName = field.getKey();
             JsonNode childNode = field.getValue();
 
-            // Construct dot-separated full path
             String fullPath = prefix.isEmpty() ? fieldName : prefix + "." + fieldName;
 
-            // Base case: Node is a leaf column definition containing type and category
             if (childNode.has("type") && childNode.has("category")) {
+                // Leaf column: parse type and category, register in map
                 DataType dataType = DataType.valueOf(childNode.path("type").asText().toUpperCase());
                 FieldCategory category = FieldCategory.fromString(childNode.get("category").asText());
                 columns.put(fullPath, new ColumnDefinition(fullPath, dataType, category));
-            }
-            // Recursive step: Node represents an inner nested object
-            else if (childNode.isObject()) {
+                LOG.trace("Registered column: path={} type={} category={}", fullPath, dataType, category);
+            } else if (childNode.isObject()) {
+                // Inner nested object: recurse deeper
+                LOG.trace("Descending into nested schema node: {}", fullPath);
                 flattenStructure(fullPath, childNode, columns);
             }
         }

@@ -71,7 +71,17 @@ data-generator/
 
 ---
 
-## 4. Cấu hình & Kết quả đầu ra (Outputs & Configuration)
+## 4. Implementation Checklist & Tasks
+
+* ✅ **Dual Schema A & B (36 fields)**: Định nghĩa 36 trường lá mỗi schema với 7 kiểu dữ liệu và 4 danh mục.
+* ✅ **Nested Dynamic Groups**: Hỗ trợ nhóm lồng nhau `debt` (Schema A) và `risk_signals` (Schema B).
+* ✅ **Kafka Producer & Salting Key**: Gửi event kèm Kafka Headers (`source`, `version`) và partition salting key `ID_{entityId}_{salt}`.
+* ✅ **Rule Generation Engine**: Sinh quy tắc AST condition tree (độ sâu 1-2, window aggregations, full toán tử).
+* ✅ **SchemaPublisher**: Publish schema lên Kafka topic `source.schema` và ghi file JSON local khi startup.
+
+---
+
+## 5. Cấu hình & Kết quả đầu ra (Outputs & Configuration)
 
 * **Đường dẫn file lưu trữ**:
   * Schemas: `data/schema/36/<version>/<timestamp>/schema_a.json` & `schema_b.json`

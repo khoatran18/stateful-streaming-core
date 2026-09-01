@@ -88,25 +88,51 @@ stream-core/
 
 ---
 
-## 3. Các hạng mục đã giải quyết và tối ưu
+## 3. Core Technical Design (Thiết kế kỹ thuật)
 
-* **Dynamic Schema & Event Ingestion Pipeline**:
-  * Xây dựng thành công cơ chế cập nhật Schema thời gian thực không cần restart job qua Flink Broadcast State Pattern.
-  * Hỗ trợ giải mã JSON đa tầng bằng thuật toán DFS Flatten: ánh xạ các trường lồng nhau thành chuỗi dot-delimited (ví dụ: `risk_signals.fraud_probability_score`) và ép kiểu native theo `DataType`.
-  * Hỗ trợ trích xuất dynamic `key_field` theo đường dẫn dot-notation bất kỳ và loại bỏ trùng lặp khóa chính trong map `fields`.
-  * Phân luồng dữ liệu lỗi/thiếu schema sang **SideOutput DLQ (Dead Letter Queue)** mà không làm crash stream chính.
+### 3.1. Dynamic Schema Broadcast Architecture
+Hệ thống áp dụng **Flink Broadcast State Pattern** để quản lý metadata schema linh hoạt trong thời gian thực:
+* **Schema Stream**: Tiêu thụ cấu hình từ topic `config.schema` với `earliest` offset để bảo đảm toàn bộ schema được nạp đầy đủ khi job khởi động. Dữ liệu được parse thành `TableSchema` và broadcast tới tất cả các parallel subtasks.
+* **Schema State**: Quản lý bằng `MapStateDescriptor<SourceVersionKey, TableSchema>`. Khóa `SourceVersionKey(source, version)` đóng vai trò composite identifier, cho phép chạy song song nhiều phiên bản schema của nhiều nguồn dữ liệu khác nhau mà không bị xung đột.
 
-* **Khắc phục xung đột JVM & Build System**:
-  * **Java 21 Module Encapsulation**: Cấu hình `--add-opens` cho toàn bộ các module `java.base/java.util`, `java.lang`, `java.time`, `java.nio` phục vụ tuần tự hóa Kryo/Chill.
-  * **Jackson Dependency Hell**: Chuẩn hóa toàn bộ hệ sinh thái Jackson (`core`, `databind`, `jsr310`, `annotations`) về bản đồng nhất `2.18.2` qua `jackson-bom` trong `dependencyManagement`.
-  * **Flink POJO Optimization**: Bổ sung default constructor và full getter/setter cho các model `RawKafkaDataEvent`, `GenericEvent` giúp tối ưu Serialization.
-  * Sửa lỗi cấu hình `FileAppender` trên Logback và bổ sung `flink-connector-base`.
+### 3.2. Recursive JSON Flattening & Dynamic Type-Casting (DFS)
+Thay vì sử dụng schema tĩnh (compile-time POJO/Avro), parser giải mã động cây JSON dựa trên `TableSchema`:
+* **DFS Hierarchy Traversal**: Sử dụng thuật toán duyệt theo chiều sâu để flatten toàn bộ cấu trúc JSON lồng nhau nhiều tầng thành chuỗi định danh phẳng phân cách bằng dấu chấm (ví dụ: `risk_signals.fraud_probability_score`).
+* **Strong Native Type-Casting**: Mỗi trường dữ liệu sau khi duyệt lá được đối chiếu với `ColumnDefinition` trong `TableSchema` để ép kiểu trực tiếp về các kiểu dữ liệu nguyên thủy tương ứng (`INT`, `LONG`, `DOUBLE`, `BOOLEAN`, `TIMESTAMP`, `STRING`), giúp tối ưu hóa bộ nhớ và tốc độ tính toán downstream.
+
+### 3.3. Flexible Routing Key Extraction
+* Cơ chế bóc tách routing key hỗ trợ đường dẫn phân cấp bất kỳ thông qua hàm `extractFieldByPath` (ví dụ: `metadata.customer_id` hoặc `user_info.account_id`).
+* Thuật toán tự động bỏ qua (skip) trường khóa chính trong quá trình flatten để tránh dư thừa và trùng lặp dữ liệu trong `GenericEvent.fields`.
+
+### 3.4. Fault Isolation & SideOutput Dead Letter Queue (DLQ)
+* **Non-blocking Stream**: Các bản tin bị sai định dạng JSON, không khớp `SourceVersionKey` hoặc thiếu schema hợp lệ sẽ được chuyển hướng sang luồng phụ `DLQ SideOutput` để ghi log cảnh báo hoặc lưu trữ điều tra.
+* Luồng xử lý chính (`GenericEvent Stream`) luôn đảm bảo tính liên tục, không bị gián đoạn hay crash JVM bởi dữ liệu lỗi cục bộ.
 
 ---
 
-## 4. Trạng thái kiểm thử Runtime (Verification)
+## 4. Implementation Checklist & Tasks
 
-* Khởi chạy MiniCluster local thành công trên JDK 21.
-* Schema Consumer gán 3 partitions và đọc cấu hình từ `earliest` offset.
-* Data Consumer gán 3 partitions, nhận bản tin `latest` offset và parse ra `GenericEvent` chính xác.
-* Stream đã sẵn sàng tại chốt `keyedStream = parseEventStream.assignTimestampsAndWatermarks(...).keyBy(GenericEvent::getCustomerId)`.
+* ✅ **Dependencies Management**: Thiết lập `pom.xml`, cấu hình `jackson-bom:2.18.2` trong `dependencyManagement` để triệt tiêu `NoSuchMethodError`.
+* ✅ **Config Loader**: Tạo cấu trúc config YAML và `ConfigLoader` đọc tham số động.
+* ✅ **Data Models**: Thiết kế Data Models chuẩn Flink POJO (`RawKafkaDataEvent`, `GenericEvent`, `TableSchema`, `ColumnDefinition`).
+* ✅ **DynamicSchemaJsonParser**: Viết `DynamicSchemaJsonParser` hỗ trợ duyệt DFS để flatten các trường dữ liệu lồng nhau.
+* ✅ **DynamicEventValidator**: Viết `DynamicEventValidator` hỗ trợ trích xuất dynamic `key_field` dạng dot-notation (và fallback `metadata.customer_id`), ép kiểu `DataType` tương ứng.
+* ✅ **DynamicEventBroadcastProcessor**: Xây dựng processor tích hợp Flink Broadcast State Pattern.
+* ✅ **DLQ SideOutput**: Cấu hình SideOutput DLQ để cô lập các bản tin rác/lỗi mà không làm crash pipeline.
+* ✅ **Java 21 `--add-opens`**: Cấu hình JVM `--add-opens` cho Java 21 tương thích cơ chế tuần tự hóa Kryo/Chill.
+* ✅ **Local Verification**: Kiểm thử luồng dữ liệu trên MiniCluster local: Broadcast schema nạp thành công, Event stream được parse và `keyBy(customer_id)` hoạt động chính xác.
+
+---
+
+## 5. Key Technical Decisions & Issues Solved
+
+* **Java 21 Module Encapsulation Fix**:
+  * **Vấn đề**: Thư viện Chill/Kryo gặp `InaccessibleObjectException` khi truy cập private fields của JDK collection (`Arrays.asList`).
+  * **Giải pháp**: Thêm các cờ `--add-opens=java.base/java.util=ALL-UNNAMED`, `java.lang`, `java.time`, `java.nio` vào VM Options của IDE và template.
+
+* **Jackson Dependency Hell**:
+  * **Vấn đề**: Flink Kafka connector kéo gián tiếp Jackson 2.15.2 gây xung đột binary với 2.18.2.
+  * **Giải pháp**: Chuyển `jackson-bom` vào khối `<dependencyManagement>` trong `pom.xml` để đồng bộ toàn bộ module Jackson về 2.18.2.
+
+* **Dynamic Key Routing**:
+  * **Giải pháp**: Hàm `extractFieldByPath` cho phép lấy routing key ở bất kỳ tầng lồng nhau nào của JSON và tự động bỏ qua không duplicate key vào map `fields`.
