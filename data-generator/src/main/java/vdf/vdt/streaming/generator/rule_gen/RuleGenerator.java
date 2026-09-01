@@ -17,17 +17,31 @@ import java.util.*;
 // (Schema A — transaction events, Schema B — system access logs).
 //
 // Each rule has trigger_criteria as an array of 1-2 source-version entries (multi-source support).
+// Both sources share the same schema_version read from application.properties.
 // All field references within condition_tree use the fully-qualified dot-path format:
-//   {source}.v2.{fieldName}          (flat fields)
-//   {source}.v2.{nestedGroup}.{field} (nested fields)
-// filter fields inside window use LOCAL paths (no source.v2. prefix).
+//   {source}.{version}.{fieldName}          (flat fields)
+//   {source}.{version}.{nestedGroup}.{field} (nested fields)
+// filter fields inside window use LOCAL paths (no source.version prefix).
+//
+// trigger_criteria.conditions is a 2D list (list-of-lists):
+//   Outer list: OR semantics — event passes if it satisfies ALL conditions in ANY inner list.
+//   Inner list: AND semantics — all conditions in the inner list must hold simultaneously.
+//   Example: [[cond1, cond2], [cond3]] means (cond1 AND cond2) OR cond3.
+//
+// filter inside window expressions is a list of conditions (AND semantics):
+//   All conditions in the list must hold for a historical event to be included in the aggregation.
+//   Example: [{field: "txn_type", op: "==", value: "TRANSFER"}, {field: "channel", op: "!=", value: "ATM"}]
+//
+// CONDITION nodes in condition_tree carry an "is_window" boolean:
+//   true  — expression contains a window aggregation (field/expr + agg + window + filter + op + threshold).
+//   false — plain scalar comparison (no window involved).
 //
 // Expression types generated (random pick among 7):
 //   0 - Categorical (STRING): ==, !=, IN, NOT IN; rhs: literal or right_field
 //   1 - Numeric (INT/LONG/FLOAT/DOUBLE): ==, !=, >, <, >=, <=, BETWEEN, IN, NOT IN;
 //       rhs: literal, right_field, or inline (for simple cases)
 //   2 - Window aggregation: SUM/AVG/MAX/MIN/COUNT over sliding or tumbling window;
-//       mandatory filter; window uses { type, duration [, slide] } format
+//       mandatory filter list; window uses { type, duration [, slide] } format
 //   3 - Boolean: ==, !=; rhs: literal or right_field
 //   4 - Linear combination: weighted sum of two dynamic-numeric fields; raw or windowed
 //   5 - Timestamp: ==, !=, >, <, >=, <=, BETWEEN; rhs: ISO-8601 literal or right_field
@@ -65,10 +79,19 @@ public class RuleGenerator {
 
     private final int reqPerSecond;
     private final int idRange;
+    // Schema version read from application.properties (e.g. "v2").
+    // Both source A and source B in trigger_criteria use this same version.
+    private final String schemaVersion;
 
+    public RuleGenerator(int idRange, int reqPerSecond, String schemaVersion) {
+        this.idRange       = Math.max(1, idRange);
+        this.reqPerSecond  = reqPerSecond;
+        this.schemaVersion = schemaVersion;
+    }
+
+    /** Backwards-compatible constructor that defaults schemaVersion to "v2". */
     public RuleGenerator(int idRange, int reqPerSecond) {
-        this.idRange      = Math.max(1, idRange);
-        this.reqPerSecond = reqPerSecond;
+        this(idRange, reqPerSecond, "v2");
     }
 
     // Generates totalRules rules and writes them as a JSON array to filePath.
@@ -85,7 +108,7 @@ public class RuleGenerator {
             rule.put("rule_id",            "rule_" + triggerSrc + "_" + i);
             rule.put("schema_fields_count", Constants.SCHEMA_A_TOTAL_FIELDS);
             rule.put("metadata",           buildRuleMetadata(maxUserId));
-            rule.put("trigger_criteria",    buildTriggerCriteriaList(triggerSrc));
+            rule.put("trigger_criteria",   buildTriggerCriteriaList(triggerSrc));
             rule.put("condition_tree",     generateNode(1, targetDepth));
             allRules.add(rule);
         }
@@ -101,26 +124,46 @@ public class RuleGenerator {
 
     // ── Trigger criteria ──────────────────────────────────────────────────────
 
-    // Builds trigger_criteria as an array of 1-2 source-version objects.
-    // The second entry (50% chance) uses the other source and version "v1" to demonstrate multi-source.
+    // Builds trigger_criteria as an array of 1 or 2 source-version objects (50/50 chance).
+    // Both entries use the same schemaVersion from application.properties.
+    // The second entry (50% chance) uses the complementary source (A↔B).
     private List<Map<String, Object>> buildTriggerCriteriaList(String primarySrc) {
         List<Map<String, Object>> list = new ArrayList<>();
-        list.add(buildOneTriggerCriteria(primarySrc, "v2"));
+        list.add(buildOneTriggerCriteria(primarySrc, schemaVersion));
         if (random.nextBoolean()) {
             String otherSrc = "A".equals(primarySrc) ? "B" : "A";
-            list.add(buildOneTriggerCriteria(otherSrc, "v1"));
+            list.add(buildOneTriggerCriteria(otherSrc, schemaVersion));
         }
         return list;
     }
 
-    // Builds one trigger_criteria entry: source, version, and 1-3 ANDed pre-filter conditions.
-    // Field paths omit the source.version prefix; source and version are explicit top-level fields.
-    // Supports: ==, !=, >, <, >=, <=, IN, NOT IN (ENUM/INT/LONG), BETWEEN (numeric).
+    // Builds one trigger_criteria entry: source, schema_version, and a 2D conditions array.
+    //
+    // conditions is a list-of-lists:
+    //   - Outer list: OR semantics — event passes if it satisfies ALL conditions in ANY inner list.
+    //   - Inner list: AND semantics — all conditions in the group must hold simultaneously.
+    // The generator produces 1 or 2 outer groups (50/50); each inner group has 1-3 conditions.
+    //
+    // Field paths omit the source.version prefix (local names).
+    // Supports: ==, !=, >, <, >=, <=, IN, NOT IN (ENUM/INT/LONG), BETWEEN (numeric), BOOLEAN ==, !=.
     private Map<String, Object> buildOneTriggerCriteria(String src, String version) {
         Map<String, Object> trigger = new LinkedHashMap<>();
-        trigger.put("source",  src);
+        trigger.put("source",         src);
         trigger.put("schema_version", version);
 
+        // Decide how many outer groups (1 or 2).
+        int outerGroups = random.nextBoolean() ? 1 : 2;
+        List<List<Map<String, Object>>> conditions2D = new ArrayList<>();
+        for (int g = 0; g < outerGroups; g++) {
+            conditions2D.add(buildTriggerConditionGroup(src));
+        }
+
+        trigger.put("conditions", conditions2D);
+        return trigger;
+    }
+
+    // Builds one inner condition group (AND semantics) with 1-3 conditions drawn from the field pool.
+    private List<Map<String, Object>> buildTriggerConditionGroup(String src) {
         List<FieldDefinition> pool = new ArrayList<>();
         pool.addAll(staticCatPool(src));
         pool.addAll(dynCatPool(src));
@@ -130,9 +173,9 @@ public class RuleGenerator {
         pool.addAll(dynNumPool(src));
 
         Collections.shuffle(pool, random);
-        int conditionCount = 1 + random.nextInt(3);
+        int conditionCount = 1 + random.nextInt(3); // 1, 2, or 3 per group
 
-        List<Map<String, Object>> conditions = new ArrayList<>();
+        List<Map<String, Object>> group = new ArrayList<>();
         for (int i = 0; i < Math.min(conditionCount, pool.size()); i++) {
             FieldDefinition fd = pool.get(i);
             Map<String, Object> cond = new LinkedHashMap<>();
@@ -157,9 +200,9 @@ public class RuleGenerator {
                 cond.put("op",    random.nextBoolean() ? "==" : "!=");
                 cond.put("value", random.nextBoolean());
             } else {
-                // INT / LONG / FLOAT / DOUBLE — static allows all ops; dynamic allows inequalities only
-                boolean isStatic   = "static_categorical".equals(fd.getCategory())
-                                  || "static_numeric".equals(fd.getCategory());
+                // INT / LONG / FLOAT / DOUBLE
+                boolean isStatic    = "static_categorical".equals(fd.getCategory())
+                                   || "static_numeric".equals(fd.getCategory());
                 boolean isIntOrLong = "INT".equals(fd.getType()) || "LONG".equals(fd.getType());
                 String op = pickNumericOp(isStatic, isIntOrLong);
                 cond.put("op", op);
@@ -174,11 +217,9 @@ public class RuleGenerator {
                     cond.put("value", formatValue(fd, randomInRange(fd)));
                 }
             }
-            conditions.add(cond);
+            group.add(cond);
         }
-
-        trigger.put("conditions", conditions);
-        return trigger;
+        return group;
     }
 
     // ── Rule metadata ─────────────────────────────────────────────────────────
@@ -198,15 +239,22 @@ public class RuleGenerator {
     // Recursively builds one AST node (CONDITION, AND, or OR).
     // Each node independently picks a target source ("A" or "B") for its expressions.
     // ~20% of leaf positions become dynCat+windowAgg AND pairs.
+    //
+    // CONDITION nodes carry an "is_window" boolean:
+    //   true  — expression is a window aggregation (contains "window" + "agg" + "filter" + threshold).
+    //   false — plain scalar comparison (no aggregation window involved).
     private Map<String, Object> generateNode(int currentDepth, int maxDepth) {
         String nodeSrc = random.nextBoolean() ? "A" : "B";
         if (currentDepth >= maxDepth || random.nextBoolean()) {
             if (random.nextInt(5) == 0) {
                 return buildDynCatPairNode(nodeSrc);
             }
+            Object expr = generateExpression(nodeSrc);
+            boolean isWindow = (expr instanceof Map<?, ?> m) && m.containsKey("window");
             Map<String, Object> node = new LinkedHashMap<>();
             node.put("type",       "CONDITION");
-            node.put("expression", generateExpression(nodeSrc));
+            node.put("is_window",  isWindow);
+            node.put("expression", expr);
             return node;
         }
         Map<String, Object> node = new LinkedHashMap<>();
@@ -430,11 +478,14 @@ public class RuleGenerator {
 
     // Type 2: window aggregation expression using dynamic numeric fields.
     // Window object: { type, duration } for tumbling; { type, duration, slide } for sliding.
-    // Optional "filter" field (50% chance) sits at the same level as "field" and "agg",
-    // expressing a pre-aggregation filter using a local dynCat field path.
+    // "filter" is a LIST of conditions (AND semantics) that must all hold for a historical event
+    // to be included in the aggregation. 1-3 conditions are generated per filter list.
     // Example:
     //   { field: "A.v2.daily_spend_total_vnd", agg: "sum",
-    //     filter: { field: "transaction_type", op: "IN", value: ["TRANSFER"] },
+    //     filter: [
+    //       { field: "transaction_type", op: "IN", value: ["TRANSFER", "PAYMENT"] },
+    //       { field: "login_channel",    op: "!=", value: "ATM" }
+    //     ],
     //     window: { type: "sliding", duration: "20m", slide: "5m" },
     //     op: ">=", threshold: 50000000.00 }
     private Map<String, Object> buildWindowAggExprMap(String src) {
@@ -465,9 +516,9 @@ public class RuleGenerator {
         }
 
         Map<String, Object> expr = new LinkedHashMap<>();
-        expr.put("field", fieldPath(src, fd));
-        expr.put("agg",   agg);
-        expr.put("filter", buildWindowFilter(src));
+        expr.put("field",     fieldPath(src, fd));
+        expr.put("agg",       agg);
+        expr.put("filter",    buildWindowFilterList(src));   // now a List<Map>
         expr.put("window",    window);
         expr.put("op",        op);
         expr.put("threshold", Double.parseDouble(String.format(Locale.US, "%.2f", threshold)));
@@ -566,9 +617,9 @@ public class RuleGenerator {
             }
 
             Map<String, Object> expr = new LinkedHashMap<>();
-            expr.put("expr", formula);
-            expr.put("agg",  agg);
-            expr.put("filter", buildWindowFilter(src));
+            expr.put("expr",      formula);
+            expr.put("agg",       agg);
+            expr.put("filter",    buildWindowFilterList(src));  // now a List<Map>
             expr.put("window",    window);
             expr.put("op",        op);
             expr.put("threshold", Double.parseDouble(String.format(Locale.US, "%.2f", threshold)));
@@ -740,10 +791,12 @@ public class RuleGenerator {
 
         Map<String, Object> dynCatNode = new LinkedHashMap<>();
         dynCatNode.put("type",       "CONDITION");
+        dynCatNode.put("is_window",  false);
         dynCatNode.put("expression", dynCatExpr);
 
         Map<String, Object> windowNode = new LinkedHashMap<>();
         windowNode.put("type",       "CONDITION");
+        windowNode.put("is_window",  true);
         windowNode.put("expression", buildWindowAggExprMap(src));
 
         Map<String, Object> andNode = new LinkedHashMap<>();
@@ -754,29 +807,37 @@ public class RuleGenerator {
 
     // ── Window helpers ────────────────────────────────────────────────────────
 
-    // Builds the optional window filter object.
-    // field uses a LOCAL path (no source.v2. prefix) from dynCatPool.
-    // Ops: ==, !=, IN, NOT IN. Value is a literal string or list.
-    private Map<String, Object> buildWindowFilter(String src) {
-        List<FieldDefinition> pool = dynCatPool(src);
-        FieldDefinition fd = pool.get(random.nextInt(pool.size()));
-        String[] ops = {"==", "!=", "IN", "NOT IN"};
-        String op = ops[random.nextInt(ops.length)];
+    // Builds the window filter as a LIST of conditions (AND semantics).
+    // Each condition uses a LOCAL field path (no source.version prefix) from dynCatPool.
+    // 1-3 conditions are generated; all must hold for an event to be included in the aggregation.
+    // Ops per condition: ==, !=, IN, NOT IN. Values are literals or literal lists.
+    private List<Map<String, Object>> buildWindowFilterList(String src) {
+        List<FieldDefinition> pool = new ArrayList<>(dynCatPool(src));
+        Collections.shuffle(pool, random);
+        int filterCount = 1 + random.nextInt(Math.min(3, pool.size())); // 1, 2, or 3 conditions
 
-        Map<String, Object> filter = new LinkedHashMap<>();
-        filter.put("field", localFieldPath(src, fd));
-        filter.put("op",    op);
+        List<Map<String, Object>> filterList = new ArrayList<>();
+        for (int i = 0; i < filterCount; i++) {
+            FieldDefinition fd = pool.get(i % pool.size());
+            String[] ops = {"==", "!=", "IN", "NOT IN"};
+            String op = ops[random.nextInt(ops.length)];
 
-        if ("IN".equals(op) || "NOT IN".equals(op)) {
-            List<String> allVals = fd.getEnumValues();
-            int count = Math.min(allVals.size(), 2 + random.nextInt(2));
-            List<String> shuffled = new ArrayList<>(allVals);
-            Collections.shuffle(shuffled, random);
-            filter.put("value", shuffled.subList(0, count));
-        } else {
-            filter.put("value", fd.getEnumValues().get(random.nextInt(fd.getEnumValues().size())));
+            Map<String, Object> cond = new LinkedHashMap<>();
+            cond.put("field", localFieldPath(src, fd));
+            cond.put("op",    op);
+
+            if ("IN".equals(op) || "NOT IN".equals(op)) {
+                List<String> allVals = fd.getEnumValues();
+                int count = Math.min(allVals.size(), 2 + random.nextInt(2));
+                List<String> shuffled = new ArrayList<>(allVals);
+                Collections.shuffle(shuffled, random);
+                cond.put("value", shuffled.subList(0, count));
+            } else {
+                cond.put("value", fd.getEnumValues().get(random.nextInt(fd.getEnumValues().size())));
+            }
+            filterList.add(cond);
         }
-        return filter;
+        return filterList;
     }
 
     // Picks a slide value in minutes that is a factor of windowMin and less than it.

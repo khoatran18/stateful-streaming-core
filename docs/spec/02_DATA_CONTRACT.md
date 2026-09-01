@@ -25,12 +25,13 @@ Hỗ trợ 5 hàm tổng hợp cửa sổ: `SUM`, `AVG`, `MAX`, `MIN`, `COUNT`.
     * **Trường thời gian:** Khi sử dụng `window`, hệ thống mặc định sử dụng trường `event_time` trong phần `metadata` của bản tin event để xác định mốc thời gian tính toán cửa sổ.
 * **Bộ lọc kích hoạt (`trigger_criteria`):**
     * Cấu trúc dạng mảng: `[{ "source": "...", "version": "...", "conditions": [ [cond1, cond2], [cond3] ] }]`.
-    * **Đa nguồn (Multi-source):** Khai báo `source` và `version` riêng giúp định tuyến và lọc dữ liệu nhanh theo từng loại event.
-    * **Cấu trúc `conditions` (Mảng 2 chiều):** Là danh sách các list điều kiện. Chỉ cần thỏa mãn **toàn bộ phần tử trong 1 list điều kiện** là pass trigger.
+    * **Đa nguồn (Multi-source):** Khai báo `source` và `version` riêng giúp định tuyến và lọc dữ liệu nhanh theo từng loại event. Cả 2 nguồn dùng chung `schema_version` được cấu hình trong `application.properties`.
+    * **Cấu trúc `conditions` (Mảng 2 chiều — DNF):** Là danh sách các list điều kiện con. Chỉ cần thỏa mãn **toàn bộ phần tử trong 1 list điều kiện con** là pass trigger (outer list: OR; inner list: AND).
 * **Quy định tính toán:**
     * Các hàm `SUM`, `AVG`, `MAX`, `MIN` chỉ áp dụng tính toán cho trường kiểu `INT`, `LONG`, `FLOAT`, `DOUBLE` hoặc biểu thức tuyến tính (`Expr`).
     * Hàm `COUNT` dùng để đếm tần suất xuất hiện bản ghi thỏa mãn điều kiện.
-* **Bộ lọc điều kiện (`filter`):** **Bắt buộc** — mọi biểu thức cửa sổ đều phải kèm điều kiện lọc trực tiếp để tính toán có chọn lọc trên dữ liệu quá khứ (ví dụ: chỉ tính trung bình hoặc đếm khi giao dịch được thực hiện qua kênh cụ thể). `filter` là một object độc lập ngang hàng với `field`/`agg`, **không** nằm bên trong `window`.
+    * **Vế phải của biểu thức cửa sổ:** Là `threshold` — một hằng số số học cụ thể.
+* **Bộ lọc điều kiện (`filter`):** **Bắt buộc** — mọi biểu thức cửa sổ đều phải kèm bộ lọc. `filter` là một **mảng (list)** các điều kiện với ngữ nghĩa **AND**: tất cả các điều kiện trong mảng phải đồng thời thỏa mãn thì bản tin lịch sử mới được tính vào phép tổng hợp. `filter` nằm ngang hàng với `field`/`agg`/`window`, **không** nằm bên trong `window`.
 
 #### Cấu trúc JSON Rule hoàn chỉnh (kèm `filter` trong Window):
 ```text
@@ -44,9 +45,9 @@ Hỗ trợ 5 hàm tổng hợp cửa sổ: `SUM`, `AVG`, `MAX`, `MIN`, `COUNT`.
   "trigger_criteria": [
     {
       "source": "B",
-      "version": "v2",
+      "schema_version": "v2",
       "conditions": [
-        [                                                           // Bộ điều kiện 1 (AND)
+        [
           {
             "field": "nps_score_baseline",
             "op": "IN",
@@ -63,7 +64,7 @@ Hỗ trợ 5 hàm tổng hợp cửa sổ: `SUM`, `AVG`, `MAX`, `MIN`, `COUNT`.
             "value": 26
           }
         ],
-        [                                                           // Bộ điều kiện 2 (OR với bộ 1)
+        [
           {
             "field": "is_vip",
             "op": "==",
@@ -74,7 +75,7 @@ Hỗ trợ 5 hàm tổng hợp cửa sổ: `SUM`, `AVG`, `MAX`, `MIN`, `COUNT`.
     },
     {
       "source": "A",
-      "version": "v1",
+      "version": "v2",
       "conditions": [
         [
           {
@@ -91,14 +92,17 @@ Hỗ trợ 5 hàm tổng hợp cửa sổ: `SUM`, `AVG`, `MAX`, `MIN`, `COUNT`.
     "children": [
       {
         "type": "CONDITION",
+        "is_window": true,                            // true = biểu thức có window aggregation
         "expression": {
           "field": "B.v2.risk_signals.fraud_probability_score",     // Cửa sổ trượt (Sliding Window)
           "agg": "avg",
-          "filter": {
-            "field": "device_type",
-            "op": "==",
-            "value": "TABLET"
-          },
+          "filter": [                                               // List điều kiện AND
+            {
+              "field": "device_type",
+              "op": "==",
+              "value": "TABLET"
+            }
+          ],
           "window": {
             "type": "sliding",
             "duration": "20m",
@@ -110,20 +114,37 @@ Hỗ trợ 5 hàm tổng hợp cửa sổ: `SUM`, `AVG`, `MAX`, `MIN`, `COUNT`.
       },
       {
         "type": "CONDITION",
+        "is_window": true,                            // true = biểu thức có window aggregation
         "expression": {
           "field": "A.v2.daily_spend_total_vnd",                    // Cửa sổ nhảy (Tumbling Window)
           "agg": "sum",
-          "filter": {
-            "field": "transaction_type",
-            "op": "NOT IN",
-            "value": ["REFUND", "REVERSAL"]
-          },
+          "filter": [                                               // List điều kiện AND (có thể nhiều)
+            {
+              "field": "transaction_type",
+              "op": "NOT IN",
+              "value": ["REFUND", "REVERSAL"]
+            },
+            {
+              "field": "login_channel",
+              "op": "!=",
+              "value": "ATM"
+            }
+          ],
           "window": {
             "type": "tumbling",
             "duration": "1h"
           },
           "op": ">",
           "threshold": 10000000.0
+        }
+      },
+      {
+        "type": "CONDITION",
+        "is_window": false,                           // false = so sánh scalar thông thường
+        "expression": {
+          "field": "A.v2.age",
+          "op": ">=",
+          "value": 25
         }
       }
     ]

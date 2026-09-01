@@ -65,8 +65,11 @@ data-generator/
 
 * **AST Rule Generation Engine (`rule_gen`)**:
   * Sinh quy tắc phân tầng AST với độ sâu 1-2 (`maxTreeDepth`), hỗ trợ pre-filter `trigger_criteria` từ nhiều nguồn (multi-source).
+  * **`trigger_criteria` đa nguồn**: Random 1 hoặc 2 source (50/50); cả 2 source dùng chung `schema_version` đọc từ `application.properties` (không hardcode).
+  * **`conditions` 2D (DNF)**: Mỗi trigger entry có `conditions` là list lồng list — outer list là OR, inner list là AND (1–2 outer group, mỗi group 1–3 điều kiện).
+  * **`filter` trong Window là list**: Trước đây là 1 object đơn; giờ là `List<Map>` 1–3 điều kiện AND để lọc sự kiện lịch sử trước khi tổng hợp.
+  * **`is_window` trên CONDITION node**: Mọi node `CONDITION` trong `condition_tree` giờ có trường `is_window: true/false` để phân biệt rõ biểu thức có window aggregation với so sánh scalar thông thường.
   * Phủ đầy đủ các toán tử theo `DATA_TYPE.md`: `==`, `!=`, `>`, `<`, `>=`, `<=`, `BETWEEN`, `IN`, `NOT IN`.
-  * Hỗ trợ cửa sổ thời gian Tumbling & Sliding Window cùng điều kiện lọc linh hoạt tại cấp độ expression.
   * Hỗ trợ 7 dạng biểu thức trong AST: Categorical, Numeric, Window Aggregation (`SUM`, `AVG`, `MAX`, `MIN`, `COUNT`), Boolean, Linear Combination, Timestamp, và Expression LHS.
 
 ---
@@ -78,6 +81,10 @@ data-generator/
 * ✅ **Kafka Producer & Salting Key**: Gửi event kèm Kafka Headers (`source`, `version`) và partition salting key `ID_{entityId}_{salt}`.
 * ✅ **Rule Generation Engine**: Sinh quy tắc AST condition tree (độ sâu 1-2, window aggregations, full toán tử).
 * ✅ **SchemaPublisher**: Publish schema lên Kafka topic `source.schema` và ghi file JSON local khi startup.
+* ✅ **`trigger_criteria` đa nguồn đúng spec**: 50/50 random 1 hoặc 2 source; `schema_version` đọc từ `application.properties`.
+* ✅ **`conditions` 2D (DNF)**: Outer list OR — inner list AND; generator tạo 1–2 outer group, mỗi group 1–3 điều kiện.
+* ✅ **`filter` window là list**: `buildWindowFilterList` trả `List<Map>` với 1–3 điều kiện AND thay vì 1 object đơn lẻ.
+* ✅ **`is_window` flag trên CONDITION node**: Phân biệt rõ window aggregation vs. scalar comparison trong `condition_tree`.
 
 ---
 
