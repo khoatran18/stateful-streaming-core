@@ -2,12 +2,16 @@ package vdf.vdt.streaming.generator.data_gen;
 
 import vdf.vdt.streaming.generator.common.Constants;
 import vdf.vdt.streaming.generator.common.KafkaProducerClient;
+import vdf.vdt.streaming.generator.common.ThroughputTracker;
 import vdf.vdt.streaming.generator.model.FieldDefinition;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.locks.LockSupport;
 
 // Continuously generates CDP customer events for Schema A (transactions) and Schema B
 // (access logs) and pushes them to Kafka.
@@ -35,52 +39,98 @@ public class DataGenerator {
         this.kafkaClient = kafkaClient;
     }
 
-    // Validates skew config, then runs the event-generation loop indefinitely.
-    //   reqPerSecond     - target event throughput
-    //   idRange          - pool size of distinct customer IDs
-    //   skewIdCount      - number of IDs at the top of the pool that receive heavy traffic
-    //   skewPctPerSkewId - individual traffic share (%) for each skew ID
-    //   kafkaTopic       - destination Kafka topic for data events
-    //   version          - active schema version (e.g. "v2"); written into the Kafka header
+    /**
+     * Default startGenerating using 16 worker threads.
+     */
     public void startGenerating(int reqPerSecond, int idRange,
+                                int skewIdCount, double skewPctPerSkewId,
+                                String kafkaTopic, String version) {
+        startGenerating(reqPerSecond, 16, idRange, skewIdCount, skewPctPerSkewId, kafkaTopic, version);
+    }
+
+    /**
+     * Starts generating events with a user-specified thread count (numThreads).
+     */
+    public void startGenerating(int reqPerSecond, int numThreads, int idRange,
                                 int skewIdCount, double skewPctPerSkewId,
                                 String kafkaTopic, String version) {
         validateSkewConfig(skewIdCount, skewPctPerSkewId, idRange);
 
+        numThreads = Math.max(1, Math.min(numThreads, reqPerSecond > 0 ? reqPerSecond : numThreads));
+        ThroughputTracker tracker = new ThroughputTracker(5); // Log stats every 5 seconds
+        kafkaClient.setThroughputTracker(tracker);
+        tracker.start(reqPerSecond);
+
         double totalSkewPct = skewIdCount * skewPctPerSkewId;
         System.out.println("Starting CDP Data Generator"
                 + " | schema: " + version
-                + " | throughput: " + reqPerSecond + " req/s"
+                + " | target throughput: " + reqPerSecond + " req/s"
+                + " | worker threads: " + numThreads
                 + " | ID pool: " + idRange
                 + " | skew IDs: " + skewIdCount
                 + " | skew pct/ID: " + skewPctPerSkewId + "%"
                 + " | total skew traffic: " + totalSkewPct + "%");
 
-        Random random       = new Random();
-        long intervalMillis = 1000L / Math.max(1, reqPerSecond);
+        ExecutorService executor = Executors.newFixedThreadPool(numThreads);
+        int baseTarget = reqPerSecond / numThreads;
+        int remainder  = reqPerSecond % numThreads;
 
-        while (true) {
-            long startTime = System.currentTimeMillis();
-            try {
-                long entityId = pickEntityId(random, idRange, skewIdCount, skewPctPerSkewId);
-                // 50/50 schema selection per tick
-                String source = random.nextBoolean() ? "A" : "B";
+        for (int i = 0; i < numThreads; i++) {
+            final int threadTarget = baseTarget + (i < remainder ? 1 : 0);
+            executor.submit(() -> runWorkerLoop(threadTarget, idRange, skewIdCount, skewPctPerSkewId, kafkaTopic, version));
+        }
 
-                Map<String, Object> event = generateEvent(entityId, source, random, version);
-                String jsonStr = objectMapper.writeValueAsString(event);
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            tracker.stop();
+            executor.shutdownNow();
+        }));
+    }
 
-                int salt = random.nextInt(1001);
-                String saltedKey = "ID_" + entityId + "_" + salt;
-                Map<String, String> headers = Map.of("schema_version", version, "source", source);
-                kafkaClient.sendWithHeader(kafkaTopic, saltedKey, jsonStr, headers);
-            } catch (Exception e) {
-                e.printStackTrace();
+    private void runWorkerLoop(int targetPerThread, int idRange,
+                               int skewIdCount, double skewPctPerSkewId,
+                               String kafkaTopic, String version) {
+        Random random = new Random();
+        int batchSize = Math.max(1, Math.min(1000, targetPerThread / 100));
+
+        while (!Thread.currentThread().isInterrupted()) {
+            long batchStartNanos = System.nanoTime();
+
+            for (int i = 0; i < batchSize; i++) {
+                try {
+                    long entityId = pickEntityId(random, idRange, skewIdCount, skewPctPerSkewId);
+                    String source = random.nextBoolean() ? "A" : "B";
+
+                    Map<String, Object> event = generateEvent(entityId, source, random, version);
+                    String jsonStr = objectMapper.writeValueAsString(event);
+
+                    int salt = random.nextInt(1001);
+                    String saltedKey = "ID_" + entityId + "_" + salt;
+                    Map<String, String> headers = Map.of("schema_version", version, "source", source);
+                    kafkaClient.sendWithHeader(kafkaTopic, saltedKey, jsonStr, headers);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             }
 
-            long elapsed = System.currentTimeMillis() - startTime;
-            if (elapsed < intervalMillis) {
-                try { Thread.sleep(intervalMillis - elapsed); }
-                catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+            if (targetPerThread > 0) {
+                long expectedNanos = (1_000_000_000L * batchSize) / targetPerThread;
+                long elapsedNanos = System.nanoTime() - batchStartNanos;
+                long waitNanos = expectedNanos - elapsedNanos;
+
+                if (waitNanos > 0) {
+                    long waitMillis = waitNanos / 1_000_000L;
+                    int remNanos = (int) (waitNanos % 1_000_000L);
+                    if (waitMillis > 0) {
+                        try {
+                            Thread.sleep(waitMillis, remNanos);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    } else {
+                        LockSupport.parkNanos(waitNanos);
+                    }
+                }
             }
         }
     }
