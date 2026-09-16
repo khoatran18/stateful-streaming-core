@@ -25,10 +25,7 @@ Thay vì để dữ liệu (Data Stream) bị biến đổi và nhân bản th�
                                 3. Đóng gói Compiled Rule Envelope
                                              │
                                              ▼
-                                [Kafka: compiled-rules-topic]
-                                             │ (Broadcast)
-                                             ▼
-[Raw DataStream (Stream/Batch)] ──► [Flink Core Engine: Process Broadcast]
+[Raw DataStream (Stream/Batch)] ──► [Process Broadcast]
                                        ├── Đánh giá Trigger trực tiếp trên Payload gốc
                                        └── Đọc/Ghi State theo Entity chuẩn
 ```
