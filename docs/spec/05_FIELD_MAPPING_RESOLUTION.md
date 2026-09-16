@@ -64,8 +64,8 @@ Mỗi Mapper được định danh bởi một mapper_id chứa bảng tra cứu
 ```json
 {
   "rule_id": "RULE_TOPUP_50K",
-  "source_topic": "CPM",
-  "raw_trigger": "request.content.serviceCode == 'TOPUP' && request.content.amount >= 50000",
+  "mapper_id": "MAPPER_CPM_V1",
+  "trigger": "request.content.serviceCode == 'TOPUP' && request.content.amount >= 50000",
 }
 ```
 
