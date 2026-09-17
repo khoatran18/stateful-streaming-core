@@ -38,34 +38,116 @@ Người viết Rule không cần nhớ cấu trúc JSON lồng nhau phức tạ
 Mỗi Mapper được định danh bởi một mapper_id chứa bảng tra cứu ánh xạ giữa tên trường sau mapper và tên trường trường gốc (JsonPath/Column name) ở nguồn. Trước khi đưa vào luồng streaming chính, hệ thống đối chiếu Rule với mapper_id để dò ngược và viết lại (rewrite) toàn bộ các trường trong biểu thức trigger và condition_tree về đúng tên trường ở schema gốc.
 
 ## Ví dụ minh họa Rewrite Rule:
-**Mapper cấu hình (mapper_id = "MAPPER_CPM_V1"):**
+**Mapper cấu hình:** Hệ thống có 2 cấu hình mapper cho 2 nguồn (CPM và EVT)
 ```json
-{
-  "mapper_id": "MAPPER_CPM_V1",
-  "source_topic": "CPM",
-  "mapping": {
-    "trans_amount": "request.content.amount",
-    "service_type": "request.content.serviceCode",
-    "account_id": "request.content.identifyValue"
+[
+  {
+    "mapper_id": "MAPPER_CPM_V1",
+    "source_topic": "CPM",
+    "mapping": {
+      "trans_amount": "request.content.amount",
+      "service_type": "request.content.serviceCode"
+    }
+  },
+  {
+    "mapper_id": "MAPPER_EVT_V1",
+    "source_topic": "EVT",
+    "mapping": {
+      "app_version": "client_info.app_ver"
+    }
   }
-}
+]
 ```
 
 **Rule ban đầu (Định nghĩa theo trường sau mapper):**
 ```json
 {
-  "rule_id": "RULE_TOPUP_50K",
-  "mapper_id": "MAPPER_CPM_V1",
-  "trigger": "service_type == 'TOPUP' && trans_amount >= 50000"
+  "rule_id": "RULE_CROSS_CHECK",
+  "rule_name": "example_rule_rewrite",
+  "mapper_ids": ["MAPPER_CPM_V1", "MAPPER_EVT_V1"],
+  "trigger_criteria": [
+    {
+      "source": "CPM",
+      "conditions": [
+        [
+          {
+            "is_window": false,
+            "field": "CPM.service_type",
+            "op": "==",
+            "value": "TOPUP"
+          }
+        ]
+      ]
+    },
+    {
+      "source": "EVT",
+      "conditions": [
+        [
+          {
+            "is_window": false,
+            "field": "EVT.app_version",
+            "op": "==",
+            "value": "2.0.0"
+          }
+        ]
+      ]
+    }
+  ],
+  "condition_tree": {
+    "type": "CONDITION",
+    "expression": {
+      "is_window": false,
+      "field": "CPM.trans_amount",
+      "op": ">=",
+      "value": 50000
+    }
+  }
 }
 ```
 
 **Rule sau khi Rewrite (Compiled Rule Payload):**
 ```json
 {
-  "rule_id": "RULE_TOPUP_50K",
-  "mapper_id": "MAPPER_CPM_V1",
-  "trigger": "request.content.serviceCode == 'TOPUP' && request.content.amount >= 50000",
+  "rule_id": "RULE_CROSS_CHECK",
+  "rule_name": "example_rule_rewrite",
+  "mapper_ids": ["MAPPER_CPM_V1", "MAPPER_EVT_V1"],
+  "trigger_criteria": [
+    {
+      "source": "CPM",
+      "conditions": [
+        [
+          {
+            "is_window": false,
+            "field": "CPM.request.content.serviceCode",
+            "op": "==",
+            "value": "TOPUP"
+          }
+        ]
+      ]
+    },
+    {
+      "source": "EVT",
+      "conditions": [
+        [
+          {
+            "is_window": false,
+            "field": "EVT.client_info.app_ver",
+            "op": "==",
+            "value": "2.0.0"
+          }
+        ]
+      ]
+    }
+  ],
+  "condition_tree": {
+    "type": "CONDITION",
+    "expression": {
+      "is_window": false,
+      "field": "CPM.request.content.amount",
+      "op": ">=",
+      "value": 50000
+    }
+  }
 }
 ```
 
@@ -81,22 +163,45 @@ Mỗi Mapper được định danh bởi một mapper_id chứa bảng tra cứu
 
 Với các bài toán đặc thù cần kết hợp dữ liệu từ 3–4 nguồn khác nhau (như bài toán A1 gộp TDH, EVT, GNOTI, CPM để dedupe hoặc các bài toán tính tổng trên nhiều kênh thanh toán qua Window), nếu quay về dùng tên trường thô của từng nguồn thì condition_tree sẽ trở nên cồng kềnh vì phải viết phép cộng/tổng hợp liệt kê tên trường của cả 4 nguồn (CPM.amount + GNOTI.trans_amount + EVT.money + ...).
 
-Giải pháp cho trường hợp này là áp dụng Trừu tượng hóa chỉ số (Metric Abstraction) thông qua cấu hình metrics registry đa nguồn.
+Giải pháp cho trường hợp này là áp dụng Trừu tượng hóa chỉ số (Metric Abstraction).
 
-## Cơ chế hoạt động:
 ## Cơ chế hoạt động (Định hướng thiết kế):
 Thay vì khai báo rời rạc, logic trích xuất Metric đa nguồn và cấu hình Window sẽ được đóng gói trực tiếp vào một Node trạng thái (Stateful Node) bên trong chính `condition_tree`. Điều này giúp bảo toàn sự nhất quán của Rule Schema hiện tại (tương tự như toán tử `IS_FIRST_ARRIVAL`).
+
+Để quy chung các nguồn về một schema, chúng ta thêm 1 trường `field_name` (nhằm đặt tên cho metric cần tổng hợp) với cú pháp `general_schema.<tên_trường_sau_mapping>` bên trong node condition. Sau này đọc rule, engine thấy tiền tố `general_schema` sẽ tự động quay lên đọc khối `metric_mapping` để lọc, chuyển đổi lấy giá trị tương ứng từ từng nguồn.
 
 **Cấu hình mẫu cho bài toán đồng bộ Window đa nguồn:**
 ```json
 {
   "rule_id": "RULE_CROSS_CHANNEL_ALERT",
+  "rule_name": "cross_channel_spend_alert",
+  "mapper_ids": [
+    "MAPPER_CPM_V1",
+    "MAPPER_GNOTI_V1",
+    "MAPPER_EVT_V1",
+    "MAPPER_TDH_V1"
+  ],
   
   "trigger_criteria": [
-    { "source": "CPM", "version": "v1", "conditions": [...] },
-    { "source": "GNOTI", "version": "v1", "conditions": [...] },
-    { "source": "EVT", "version": "v1", "conditions": [...] },
-    { "source": "TDH", "version": "v1", "conditions": [...] }
+    {
+      "source": ["CPM", "GNOTI", "EVT", "TDH"],
+      "conditions": [
+        [
+          {
+            "is_window": false,
+            "field": "general_schema.trans_type",
+            "metric_mapping": {
+              "CPM": "request.content.type",
+              "GNOTI": "type",
+              "EVT": "event_value.trans_type",
+              "TDH": "trans_type"
+            },
+            "op": "==",
+            "value": "PAYMENT"
+          }
+        ]
+      ]
+    }
   ],
 
   "condition_tree": {
@@ -105,9 +210,14 @@ Thay vì khai báo rời rạc, logic trích xuất Metric đa nguồn và cấu
       {
         "type": "CONDITION",
         "expression": {
+          "is_window": true,
+          "window_type": "sliding",
           // Toán tử tính tổng trên Window
           "op": "WINDOW_SUM",
           
+          // Đặt tên metric cần tổng hợp theo chuẩn general_schema
+          "field_name": "general_schema.total_spend",
+
           // Trích xuất chung metric (VD: Tổng chi tiêu) từ 4 nguồn (Metric Abstraction)
           "metric_mapping": {
             "CPM": "request.content.amount",
@@ -128,8 +238,11 @@ Thay vì khai báo rời rạc, logic trích xuất Metric đa nguồn và cấu
       {
         "type": "CONDITION",
         "expression": {
+          "is_window": true,
+          "window_type": "tumbling",
           // Window thứ hai (VD: Tổng discount)
           "op": "WINDOW_SUM",
+          "field_name": "general_schema.total_discount",
           "metric_mapping": {
             "CPM": "request.content.discount",
             "GNOTI": "discount_amount",
@@ -137,7 +250,6 @@ Thay vì khai báo rời rạc, logic trích xuất Metric đa nguồn và cấu
             "TDH": "trans_daily_discount"
           },
           "window_size": "10m",
-          "slide_size": "1m",
           "compare_op": "<",
           "compare_value": 50000
         }
