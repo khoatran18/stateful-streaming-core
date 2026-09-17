@@ -13,22 +13,25 @@
 * **`BOOLEAN`**: `==`, `!=`
 * **`TIMESTAMP`**: `==`, `!=`, `>`, `<`, `>=`, `<=`, `BETWEEN`
 * **`OBJECT`**: Cấu trúc lồng nhau (Nested Objects), truy xuất dữ liệu đa cấp qua cú pháp Dot Notation (ví dụ: `risk_signals.fraud_probability_score`).
+* **`ANY / TUPLE`**: `IN_DATASET` (Toán tử đặc thù dùng để đối soát 1 hoặc cụm nhiều trường đồng thời với tập dữ liệu lớn lưu ở Broadcast State).
 
 ---
 
 ## 2. Cấu trúc Rule và JSON mẫu
 
 * **Bộ lọc kích hoạt (`trigger_criteria`):**
-    * Cấu trúc dạng mảng: `[{ "source": "...", "version": "...", "conditions": [ [cond1, cond2], [cond3] ] }]`.
+    * Cấu trúc dạng mảng: `[{ "source": "...", "version": "...", "key_field": "...", "conditions": [ [cond1, cond2], [cond3] ] }]`.
     * **Đa nguồn (Multi-source):** Khai báo `source` và `version` riêng giúp định tuyến và lọc dữ liệu nhanh theo từng loại event. Cả 2 nguồn dùng chung `schema_version` được cấu hình trong `application.properties`.
+    * **Khóa gom nhóm (`key_field`):** Khai báo trường dữ liệu dùng để `keyBy` (cùng đại diện cho số điện thoại nhưng mỗi schema có thể có tên trường khác nhau, ví dụ `msisdn`, `phone`). **Yêu cầu đầu vào:** Giá trị của trường số điện thoại này bắt buộc phải theo định dạng `(+84)...`.
+    * **Tra cứu danh sách lớn:** Hỗ trợ kiểm tra giá trị qua `IN_DATASET` chung cho cả 1 trường hoặc nhiều trường kết hợp (thay cho `IN` thông thường khi số lượng phần tử quá lớn hoặc giá trị các trường cần đi theo bộ). Engine sẽ dựa vào RocksDB để tra cứu hiệu quả.
     * **Cấu trúc `conditions` (Mảng 2 chiều — DNF):** Là danh sách các list điều kiện con. Chỉ cần thỏa mãn **toàn bộ phần tử trong 1 list điều kiện con** là pass trigger (outer list: OR; inner list: AND).
 
-#### Cấu trúc JSON Rule hoàn chỉnh:
+### 2.1. Cấu trúc JSON Rule hoàn chỉnh:
 ```text
 {
   "rule_id": "rule_B_54",
   "rule_name": "example_rule_name",
-  "schema_fields_count": 36,
+  "rule_version": "1",
   "metadata": {
     "event_time": "2026-08-24T16:02:37.123+07:00",
     "user_id" : "user_011"
@@ -37,22 +40,21 @@
     {
       "source": "B",
       "schema_version": "v2",
+      "key_field": "msisdn",
       "conditions": [
         [
           {
-            "field": "nps_score_baseline",
-            "op": "IN",
-            "value": [7, 3]
+            "fields": [
+              "process_code",
+              "service_code"
+            ],
+            "op": "IN_DATASET",
+            "dataset_id": "dataset_nps_high_risk"
           },
           {
             "field": "device_type",
             "op": "==",
             "value": "TABLET"
-          },
-          {
-            "field": "financial_literacy_score",
-            "op": "<",
-            "value": 26
           }
         ],
         [
@@ -67,6 +69,7 @@
     {
       "source": "A",
       "version": "v2",
+      "key_field": "phone_number",
       "conditions": [
         [
           {
@@ -109,6 +112,75 @@
   }
 }
 ```
+### 2.2. Tra cứu danh sách lớn qua Dataset (IN_DATASET)
+
+**Lý do thiết kế toán tử `IN_DATASET`:** \
+Trong thực tế vận hành, hệ thống phát sinh hai rào cản lớn đối với toán tử `IN` thông thường:
+1. Khi 1 trường cần kiểm tra `IN` với một danh sách quá nhiều giá trị (hàng ngàn hoặc chục ngàn phần tử).
+2. Khi cần đối soát các bộ trường (composite tuple) với nhiều bộ giá trị khác nhau (ví dụ: đối soát tập hợp `[process_code, service_code]` với list các bộ giá trị).
+
+Nếu lưu mảng giá trị trực tiếp vào Rule JSON để lưu trên RAM, bộ nhớ của engine sẽ bị phình to và hiệu năng giảm sút. Do đó, hệ thống bổ sung cơ chế lưu trữ và tra cứu riêng biệt (thông qua Broadcast State và RocksDB), cùng toán tử `IN_DATASET`.
+
+Với trường hợp có 1 trường riêng lẻ (không đi theo bộ), core coi như 1 bộ nhưng có 1 phần tử (trường `fields` là list nhưng có 1 phần tử).
+
+#### Định dạng dữ liệu Dataset (Gửi qua Kafka)
+Đầu vào của bộ dataset sẽ được đẩy qua luồng Kafka dưới định dạng JSON:
+```json
+{
+  "dataset_id": "dataset_telecom_high_risk",
+  "dataset_version": "v1",
+  "fields": ["device_type", "channel", "mcc_code"],
+  "values": [
+    ["TABLET", "MOBILE_APP", 5411],
+    ["DESKTOP", "WEB", 5812]
+  ]
+}
+```
+
+> **Lưu ý:** Nếu danh sách dưới 50 phần tử, người dùng nên dùng `op`: `"IN"` với mảng `value`: `[...]` như cũ để tra cứu trực tiếp trên RAM. Khi vượt ngưỡng, chuyển sang `IN_DATASET` để trỏ vào Broadcast State.
+
+#### Cấu hình Rule sử dụng IN_DATASET
+Ví dụ minh họa việc kết hợp đồng thời tra cứu 1 trường danh sách đen (`beneficiary_account`) và 1 tập mẫu rủi ro phức hợp đa trường (`mcc_code`, `transaction_channel`, `device_province_code`).
+
+```json
+{
+  "rule_id": "rule_fraud_combined_check",
+  "rule_name": "block_suspicious_accounts_and_channels",
+  "rule_version": "1",
+  "trigger_criteria": [
+    {
+      "source": "TRANS_STREAM",
+      "schema_version": "v2",
+      "conditions": [
+        [
+          {
+            "fields": [
+              "beneficiary_account"
+            ],
+            "op": "IN_DATASET",
+            "dataset_id": "dataset_blacklist_accounts_202609",
+            "dataset_version": "v1"
+          },
+          {
+            // Khai báo thứ tự các trường để tạo Composite Key
+            "fields": [
+              "mcc_code",
+              "transaction_channel",
+              "device_province_code"
+            ],
+            "op": "IN_DATASET",
+            "dataset_id": "dataset_high_risk_tuples_q3"
+          }
+        ]
+      ]
+    }
+  ]
+}
+```
+
+> **Chi tiết thiết kế** cơ chế lưu trữ Dataset trên RocksDB, kỹ thuật băm `xxHash64`, thiết kế Key 16 Bytes (nhằm tối ưu hóa RAM và L1/L2 Cache), đánh giá tỷ lệ đụng độ:
+> 👉 [**Chi tiết cơ chế lưu trữ IN_DATASET**](./details/IN_DATASET_STORAGE_SPEC.md)
+
 ## 3. Tổng quát hóa các Node (Type) trong Condition Tree
 
 Cấu trúc của `condition_tree` là thành phần lõi chứa logic chính của hệ thống. Các node trong cây được chia làm 3 nhóm logic cốt lõi dựa trên thuộc tính `type`:
@@ -122,8 +194,8 @@ Cấu trúc của `condition_tree` là thành phần lõi chứa logic chính c�
 > **Lưu ý:** Engine sẽ từ các thuộc tính và phép toán (op) stateful để xét xem nên đưa những gì trong event stream vào state.
 
 ## 4. Quy tắc toán tử:
-* **Vế trái:** Luôn là một trường dữ liệu `Field`, hoặc biểu thức tuyến tính `Expr` (chỉ áp dụng đối với `INT`, `LONG`, `FLOAT` hoặc `DOUBLE`).
-* **Vế phải:** Có thể là giá trị cụ thể (Literal), danh sách giá trị (`List`), hoặc trường dữ liệu khác (`Field`), biểu thức tuyến tính `Expr` (với `INT`, `LONG`, `FLOAT` hoặc `DOUBLE`).
+* **Vế trái:** Luôn là một trường dữ liệu `Field` (hoặc mảng `fields` đối với `IN_DATASET`), hoặc biểu thức tuyến tính `Expr` (chỉ áp dụng đối với `INT`, `LONG`, `FLOAT` hoặc `DOUBLE`).
+* **Vế phải:** Có thể là giá trị cụ thể (Literal), danh sách giá trị (`List`), hoặc trường dữ liệu khác (`Field`), biểu thức tuyến tính `Expr` (với `INT`, `LONG`, `FLOAT` hoặc `DOUBLE`). Riêng với toán tử `IN_DATASET`, vế phải là các thuộc tính tham chiếu `dataset_id` và `dataset_version`.
 * **Quy định bất biến cho `IN`, `NOT IN`, `BETWEEN`:** Vế phải bắt buộc là danh sách/mảng các **giá trị cụ thể (Literal values)**, không chứa `Field` bên trong để tránh phức tạp hóa cây điều kiện.
 
 ---
@@ -157,6 +229,7 @@ Cấu trúc của `condition_tree` là thành phần lõi chứa logic chính c�
 | **`BOOLEAN`**        | `==`, `!=`                       | `Field (Boolean)`               | `Field (Boolean)` / `Boolean`             | Kiểm tra hoặc đối chiếu cờ trạng thái                          | <pre>{<br>  "field": "is_suspicious_ip",<br>  "op": "==",<br>  "value": true<br>}</pre>                                                                      | <pre>{<br>  "field": "is_2fa_enabled",<br>  "op": "==",<br>  "right_field": "is_biometric_enabled"<br>}</pre>                  |                                                                                                                                          |
 | **`TIMESTAMP`**      | `==`, `!=`, `>`, `<`, `>=`, `<=` | `Field (Timestamp)`             | `Field (Timestamp)` / `String (ISO-8601)` | So sánh mốc thời gian (hỗ trợ so sánh giữa 2 trường thời gian) | <pre>{<br>  "field": "account_created_date",<br>  "op": ">",<br>  "value": "2026-01-01T00:00:00Z"<br>}</pre>                                                 | <pre>{<br>  "field": "event_time",<br>  "op": ">",<br>  "right_field": "last_login_time"<br>}</pre>                            |                                                                                                                                          |
 |                      | `BETWEEN`                        | `Field (Timestamp)`             | `[from, to]` (`Timestamp[2]`)             | Khoảng thời gian (`>= from && <= to`)                          | <pre>{<br>  "field": "last_login_time",<br>  "op": "BETWEEN",<br>  "value": [<br>    "2026-08-01T00:00:00Z",<br>    "2026-08-24T23:59:59Z"<br>  ]<br>}</pre> |                                                                                                                                |                                                                                                                                          |
+| **`ANY / TUPLE`**    | `IN_DATASET`                     | `List<Field>` (Mảng `fields`)   | `dataset_id`                              | Tra cứu tập dữ liệu lớn qua Broadcast State (RocksDB)          | <pre>{<br>  "fields": ["mcc_code"],<br>  "op": "IN_DATASET",<br>  "dataset_id": "ds_1"<br>}</pre> |                                                                                                                                |                                                                                                                                          |
 
 ## 5. Các mẫu Rule đặc biệt (Cases)
 
@@ -173,6 +246,7 @@ Cấu trúc sử dụng node kiểu `SEQUENCE` với pattern `NOT_FOLLOWED_BY`.
 {
   "rule_id": "rule_dropoff_telecom_topup_120s",
   "rule_name": "product_journey",
+  "rule_version": "1",
   
   // 1. BỘ LỌC KÍCH HOẠT (TRIGGER CRITERIA)
   // Chỉ tải rule này vào RAM khi stream nhận đúng các event liên quan, tránh kiểm tra vô tội vạ.
@@ -258,6 +332,7 @@ Với yêu cầu: Trong 4 source A, B, C, D, khi các event có cùng `id` và `
 {
   "rule_id": "rule_first_arrival_4_sources",
   "rule_name": "dedup_first_seen",
+  "rule_version": "1",
 
   // 1. BỘ LỌC KÍCH HOẠT (TRIGGER CRITERIA)
   // Lắng nghe cả 4 nguồn dữ liệu A, B, C, D đổ vào hệ thống
