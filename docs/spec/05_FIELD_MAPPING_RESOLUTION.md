@@ -71,7 +71,6 @@ Mỗi Mapper được định danh bởi một mapper_id chứa bảng tra cứu
       "conditions": [
         [
           {
-            "is_window": false,
             "field": "CPM.service_type",
             "op": "==",
             "value": "TOPUP"
@@ -84,7 +83,6 @@ Mỗi Mapper được định danh bởi một mapper_id chứa bảng tra cứu
       "conditions": [
         [
           {
-            "is_window": false,
             "field": "EVT.app_version",
             "op": "==",
             "value": "2.0.0"
@@ -117,7 +115,6 @@ Mỗi Mapper được định danh bởi một mapper_id chứa bảng tra cứu
       "conditions": [
         [
           {
-            "is_window": false,
             "field": "CPM.request.content.serviceCode",
             "op": "==",
             "value": "TOPUP"
@@ -130,7 +127,6 @@ Mỗi Mapper được định danh bởi một mapper_id chứa bảng tra cứu
       "conditions": [
         [
           {
-            "is_window": false,
             "field": "EVT.client_info.app_ver",
             "op": "==",
             "value": "2.0.0"
@@ -168,9 +164,9 @@ Giải pháp cho trường hợp này là áp dụng Trừu tượng hóa chỉ 
 ## Cơ chế hoạt động (Định hướng thiết kế):
 Thay vì khai báo rời rạc, logic trích xuất Metric đa nguồn và cấu hình Window sẽ được đóng gói trực tiếp vào một Node trạng thái (Stateful Node) bên trong chính `condition_tree`. Điều này giúp bảo toàn sự nhất quán của Rule Schema hiện tại (tương tự như toán tử `IS_FIRST_ARRIVAL`).
 
-Để quy chung các nguồn về một schema, chúng ta thêm 1 trường `field_name` (nhằm đặt tên cho metric cần tổng hợp) với cú pháp `general_schema.<tên_trường_sau_mapping>` bên trong node condition. Sau này đọc rule, engine thấy tiền tố `general_schema` sẽ tự động quay lên đọc khối `metric_mapping` để lọc, chuyển đổi lấy giá trị tương ứng từ từng nguồn.
+Để quy chung các nguồn về một schema, người dùng chỉ cần khai báo tên trường với cú pháp `general_schema.<tên_trường_sau_mapping>`. Ở giai đoạn biên dịch (Compile time), hệ thống sẽ đối chiếu với danh sách `mapper_ids` để dò ngược trường gốc từ từng nguồn và tự động "nhúng" thêm khối `metric_mapping` vào Rule Payload trước khi đẩy xuống Engine.
 
-**Cấu hình mẫu cho bài toán đồng bộ Window đa nguồn:**
+**1. Rule ban đầu (Góc nhìn của người cấu hình nghiệp vụ):**
 ```json
 {
   "rule_id": "RULE_CROSS_CHANNEL_ALERT",
@@ -188,7 +184,71 @@ Thay vì khai báo rời rạc, logic trích xuất Metric đa nguồn và cấu
       "conditions": [
         [
           {
-            "is_window": false,
+            "field": "general_schema.trans_type",
+            "op": "==",
+            "value": "PAYMENT"
+          }
+        ]
+      ]
+    }
+  ],
+
+  "condition_tree": {
+    "type": "AND",
+    "children": [
+      {
+        "type": "CONDITION",
+        "expression": {
+          "is_window": true,
+          "window_type": "sliding",
+          // Toán tử tính tổng trên Window
+          "op": "WINDOW_SUM",
+          // Đặt tên metric cần tổng hợp theo chuẩn general_schema
+          "field_name": "general_schema.total_spend",
+          // Khai báo cấu hình Window trực tiếp trong Node
+          "window_size": "10m",
+          "slide_size": "1m",
+          // Điều kiện đánh giá cuối cùng trên kết quả của Window
+          "compare_op": ">=",
+          "compare_value": 1000000
+        }
+      },
+      {
+        "type": "CONDITION",
+        "expression": {
+          "is_window": true,
+          "window_type": "tumbling",
+          // Window thứ hai (VD: Tổng discount)
+          "op": "WINDOW_SUM",
+          "field_name": "general_schema.total_discount",
+          "window_size": "10m",
+          "compare_op": "<",
+          "compare_value": 50000
+        }
+      }
+    ]
+  }
+}
+```
+
+**2. Rule sau khi Rewrite (Compiled Rule Payload - Góc nhìn Engine xử lý):**
+```json
+{
+  "rule_id": "RULE_CROSS_CHANNEL_ALERT",
+  "rule_name": "cross_channel_spend_alert",
+  "mapper_ids": [
+    "MAPPER_CPM_V1",
+    "MAPPER_GNOTI_V1",
+    "MAPPER_EVT_V1",
+    "MAPPER_TDH_V1"
+  ],
+  
+  "trigger_criteria": [
+    {
+      "source": ["CPM", "GNOTI", "EVT", "TDH"],
+      "conditions": [
+        [
+          {
             "field": "general_schema.trans_type",
             "metric_mapping": {
               "CPM": "request.content.type",
