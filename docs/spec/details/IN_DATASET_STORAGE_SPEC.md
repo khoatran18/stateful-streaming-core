@@ -14,14 +14,13 @@ Khi ghép nhiều trường thành một bộ (tuple), lỗi logic phổ biến 
   - **Trường 2** (`5411`): Ghi 2 byte độ dài mang giá trị `4`, liền sau là 4 byte nhị phân của số nguyên `5411`.
 - **Ưu điểm**: Khi đưa vào hàm băm, engine đọc theo ranh giới byte chính xác tuyệt đối mà không cần quan tâm chuỗi bên trong chứa ký tự gì, không cần escape và không cần cấp phát chuỗi tạm (zero object allocation) trên JVM.
 
-### 2. Tạo Key lưu trữ bằng 64-bit Hash (xxHash64)
-Thay vì lưu toàn bộ chuỗi byte dài và biến thiên vào bộ nhớ/RocksDB, ta cho toàn bộ mảng byte length-prefixed chạy qua `xxHash64`:
-- **Ánh xạ về số nguyên cố định**: Bất kể tuple có 2 trường hay 5 trường, chuỗi dài 10 byte hay 100 byte, `xxHash64` đều tính toán và quy đổi về duy nhất 1 số nguyên `long` (8 bytes / 64 bits).
-- **Cơ chế trộn bit**: `xxHash64` chia dữ liệu thành các khối 32 byte, dùng các phép toán nhân số nguyên tố lớn kết hợp quay bit song song trên các thanh ghi CPU. Chỉ cần 1 bit đầu vào thay đổi, giá trị 64-bit đầu ra sẽ bị xáo trộn ngẫu nhiên (hiệu ứng Avalanche).
-- **Thiết kế Key 16 Bytes (Phân mảnh theo Dataset)**:
-  - Trong thực tế, hệ thống phải lưu trữ nhiều Dataset khác nhau trên cùng một RocksDB. Để phân tách dữ liệu, tên của tập dữ liệu (`dataset_id`) cũng được đưa qua `xxHash64` để ép về số nguyên 8 bytes.
-  - Định dạng khóa cuối cùng lưu xuống DB có độ dài **16 bytes**: `[8 bytes xxHash64(dataset_id)] + [8 bytes xxHash64(tuple)]`.
+### 2. Thiết kế Key - Value trên RocksDB
+Thay vì chỉ dùng một mảng HashSet tĩnh trên RAM, hệ thống dùng cấu trúc Key-Value lưu vào RocksDB kết hợp với **nguyên lý Separate Chaining (Mở chuỗi)** kinh điển của Hash Table. Thiết kế này giúp hệ thống chống lại hoàn toàn lỗi sai sót dữ liệu do đụng độ hàm băm (Hash Collision), dù tỷ lệ xảy ra vô cùng hiếm hoi.
 
+#### a. Cấu trúc Key (16 Bytes cố định)
+Bất kể tuple có 2 trường hay 5 trường, chuỗi dài 10 byte hay 100 byte, nó đều được tính toán bằng `xxHash64` và quy đổi về duy nhất một mã băm 8 bytes. Đồng thời, tên của tập dữ liệu (`dataset_id`) cũng được đưa qua `xxHash64` ép về số nguyên 8 bytes.
+
+Định dạng khóa cuối cùng lưu xuống DB có độ dài **16 bytes**:
 ```text
 |<------------------------- 16 BYTES ---------------------------->|
 +--------------------------------+--------------------------------+
@@ -31,27 +30,54 @@ Thay vì lưu toàn bộ chuỗi byte dài và biến thiên vào bộ nhớ/Roc
 +--------------------------------+--------------------------------+
 ```
 
-- **Hiệu năng lưu trữ**:
-  - Thay vì lưu các chuỗi string cồng kềnh, State chỉ cần lưu các chuỗi byte tĩnh 16-byte phẳng trong RocksDB.
-  - Giúp index cực gọn, toàn bộ key của 100–300 bộ tuple chỉ chiếm chưa tới 4.8 KB bộ nhớ (do $300 \text{ tuple} \times 16 \text{ bytes/key} = 4.800 \text{ bytes} \approx 4.8 \text{ KB}$), nằm trọn trong L1/L2 Cache của CPU.
+#### b. Cấu trúc Value (Binary Bucket Format)
+Thay vì chỉ lưu 1 cờ `true` hay 1 chuỗi byte đơn lẻ, Value đóng vai trò như một **Bucket** chứa danh sách các mảng byte gốc (`List<byte[]>`) có cùng mã băm 64-bit đó. 
+Để không phải serialize/deserialize JSON hay Java Object phức tạp, toàn bộ Bucket được đóng gói thành một mảng byte phẳng dạng Length-prefixed lồng nhau:
 
-### 3. Bản chất tỷ lệ đụng độ trên không gian 64-bit
-Nhiều người e ngại hàm băm nén dữ liệu sẽ gây trùng lặp (đụng độ). Tuy nhiên, với không gian 64-bit và số lượng 100–300 phần tử, xác suất này gần như bằng 0, phù hợp với mục đích thông báo và thống kê.
+```text
+|<------------------------------ VALUE BUCKET --------------------------------------------->|
++---------------+---------------------+---------------+-------------------------------------+
+| Số lượng tuple| Độ dài Tuple 1 (L1) | Dữ liệu gốc 1 | Độ dài Tuple 2 (L2) | Dữ liệu gốc 2 |
+|   (1 byte)    |      (2 bytes)      |   (L1 bytes)  |      (2 bytes)      |   (L2 bytes)  |
++---------------+---------------------+---------------+-------------------------------------+
+```
+- **Byte đầu tiên (`count`)**: Số lượng tuple gốc đang chia sẻ chung mã hash này.
+  - Với hàm xxHash64, gần như trong trường hợp, `count = 1`.
+  - Chỉ khi có đụng độ thực sự xảy ra, `count = 2` (hoặc lớn hơn).
+- **Các byte tiếp theo**: Lặp lại `[độ dài (2 bytes)]` + `[mảng byte length-prefixed gốc]`.
 
-- **Độ lớn của không gian 64-bit**:
-  Một số 64-bit có $2^{64}$ khả năng:
-  $$2^{64} = 18.446.744.073.709.551.616 \text{ giá trị (khoảng 18,4 tỷ tỷ)}$$
-  Tưởng tượng bạn có hơn 18 tỷ tỷ chiếc hộp rỗng. Băm một tuple là thả một hạt đậu ngẫu nhiên vào một trong số các hộp đó.
+### 3. Quy trình Đọc / Ghi chống đụng độ
 
-- **Công thức xác suất đụng độ (Birthday Paradox)**:
-  Khi thả $N$ phần tử vào $2^{64}$ chiếc hộp, xác suất có ít nhất 2 phần tử rơi trùng vào một hộp được tính bằng:
-  $$P \approx \frac{N^2}{2 \times 2^{64}} = \frac{N^2}{2^{65}}$$
+#### Quy trình Ghi (Broadcast Stream - UPSERT Logic)
+Khi nhận một bộ tuple mới cần nạp vào State:
+1. Tính **Key 16 bytes**: `[dataset_id (8B)] + [tuple_hash (8B)]`.
+2. Kiểm tra xem Key này đã tồn tại trong State chưa:
+   - **Nếu chưa có**: Tạo Value Bucket mới với `count = 1` đi kèm dữ liệu gốc của tuple, gọi `state.put(key, value)`.
+   - **Nếu đã có (Phát hiện đụng độ hoặc ghi đè)**:
+     - Đọc Value cũ lên, giải mã Bucket và duyệt qua các phần tử bên trong.
+     - Nếu chuỗi byte mới đã tồn tại trong bucket $\rightarrow$ Bỏ qua (đây là dữ liệu trùng lặp).
+     - Nếu chuỗi byte mới chưa tồn tại (đây là đụng độ hash thật sự) $\rightarrow$ Tăng `count` lên `count + 1`, append thêm `[độ dài mới] + [mảng byte mới]` vào đuôi mảng Bucket và ghi cập nhật lại vào State.
 
-- **Tính toán thực tế với $N = 300$ cặp**:
-  $$P \approx \frac{300^2}{2^{65}} = \frac{90.000}{36.893.488.147.419.103.232} \approx 2,44 \times 10^{-15}$$
-  Con số này tương đương $0,000000000000244\%$.
-
-- **Xác suất va chạm với luồng Event đến**:
-  Giả sử hệ thống lưu sẵn 300 hash trong State. Một event rác (không thuộc 300 cặp này) bay đến, xác suất để hash của nó vô tình trùng khớp với 1 trong 300 hash có sẵn là:
-  $$P_{\text{false\_hit}} = \frac{300}{2^{64}} \approx 1,62 \times 10^{-17}$$
-  Kể cả hệ thống xử lý 100 triệu event mỗi ngày, về mặt thống kê, bạn cần chạy hệ thống liên tục hàng triệu năm mới có thể gặp một lần đụng độ ngẫu nhiên.
+#### Quy trình Đọc và Kiểm tra (Event Stream - O(1))
+Khi event từ luồng giao dịch/sự kiện đổ về:
+```text
+[Event đến] 
+     │
+     ▼
+[Encode mảng byte gốc + Tính xxHash64] ──► Dựng Key 16 bytes
+     │
+     ▼
+[Gọi state.get(Key)]
+     │
+     ├── Trả về null ────────► DROP EVENT NGAY
+     │
+     └── Có Value (Đọc Bucket)
+           │
+           ▼
+     [Duyệt qua các tuple gốc trong Bucket]
+           │
+           ├── Có 1 tuple khớp (Arrays.equals) ──► PASS TRIGGER (Khớp chính xác 100%)
+           │
+           └── Không có tuple nào khớp ─────────► DROP EVENT (Chặn đứng đụng độ)
+```
+Quy trình này xử lý siêu tốc vì hầu hết các event rác sẽ bị đánh rớt ngay bước `state.get()` trả về `null`. Chỉ khi mã băm vô tình trùng khớp, hệ thống mới đọc Bucket lên và so sánh từng byte một (`Arrays.equals`) để tìm ra sự thật gốc rễ, đảm bảo chính xác $100\%$ không bị lọt event sai lệch.
